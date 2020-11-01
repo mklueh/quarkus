@@ -32,6 +32,14 @@ public class ParserTest {
     }
 
     @Test
+    public void testSectionEndWithoutStart() {
+        assertParserError("Hello {/}",
+                "Parser error on line 1: no section start tag found for {/}", 1);
+        assertParserError("{#if true}Bye...{/if} Hello {/if}",
+                "Parser error on line 1: no section start tag found for {/if}", 1);
+    }
+
+    @Test
     public void testNonexistentHelper() {
         assertParserError("Hello!\n {#foo test/}",
                 "Parser error on line 2: no section helper found for {#foo test/}", 2);
@@ -163,6 +171,70 @@ public class ParserTest {
         Engine engine = Engine.builder().addDefaults().build();
         assertEquals("Hello world", engine.parse("{#if true  }Hello {name }{/if  }").data("name", "world").render());
         assertEquals("Hello world", engine.parse("Hello {name ?: 'world'  }").render());
+    }
+
+    @Test
+    public void testCdata() {
+        Engine engine = Engine.builder().addDefaults().build();
+        String jsSnippet = "<script>const foo = function(){alert('bar');};</script>";
+        try {
+            engine.parse("Hello {name} " + jsSnippet);
+            fail();
+        } catch (Exception expected) {
+        }
+        assertEquals("Hello world <script>const foo = function(){alert('bar');};</script>", engine.parse("Hello {name} {["
+                + jsSnippet
+                + "]}").data("name", "world").render());
+        assertEquals("Hello world <strong>", engine.parse("Hello {name} {[<strong>]}").data("name", "world").render());
+        assertEquals("Hello world <script>const foo = function(){alert('bar');};</script>", engine.parse("Hello {name} {|"
+                + jsSnippet
+                + "|}").data("name", "world").render());
+        assertEquals("Hello world <strong>", engine.parse("Hello {name} {|<strong>|}").data("name", "world").render());
+        assertEquals("Hello {name} world", engine.parse("Hello{| {name} |}{name}").data("name", "world").render());
+    }
+
+    @Test
+    public void testRemoveStandaloneLines() {
+        Engine engine = Engine.builder().addDefaults().removeStandaloneLines(true).build();
+        String content = "{@java.lang.String foo}\n" // -> standalone
+                + "\n"
+                + " {! My comment !} \n"
+                + "  {#for i in 5}\n" // -> standalone
+                + "{index}:\n"
+                + "{/} "; // -> standalone
+        assertEquals("\n0:\n1:\n2:\n3:\n4:\n", engine.parse(content).render());
+        assertEquals("bar\n", engine.parse("{foo}\n").data("foo", "bar").render());
+    }
+
+    @Test
+    public void testValidIdentifiers() {
+        assertTrue(Parser.isValidIdentifier("foo"));
+        assertTrue(Parser.isValidIdentifier("_foo"));
+        assertTrue(Parser.isValidIdentifier("foo$$bar"));
+        assertTrue(Parser.isValidIdentifier("1Foo_$"));
+        assertTrue(Parser.isValidIdentifier("1"));
+        assertTrue(Parser.isValidIdentifier("1?"));
+        assertTrue(Parser.isValidIdentifier("1:"));
+        assertTrue(Parser.isValidIdentifier("-foo"));
+        assertTrue(Parser.isValidIdentifier("foo["));
+        assertTrue(Parser.isValidIdentifier("foo^"));
+        Engine engine = Engine.builder().addDefaults().build();
+        try {
+            engine.parse("{foo\nfoo}");
+            fail();
+        } catch (Exception expected) {
+            assertTrue(expected.getMessage().contains("Invalid identifier found"), expected.toString());
+        }
+    }
+
+    @Test
+    public void testTextNodeCollapse() {
+        TemplateImpl template = (TemplateImpl) Engine.builder().addDefaults().build().parse("Hello\nworld!{foo}next");
+        List<TemplateNode> rootNodes = template.root.blocks.get(0).nodes;
+        assertEquals(3, rootNodes.size());
+        assertEquals("Hello\nworld!", ((TextNode) rootNodes.get(0)).getValue());
+        assertEquals(1, ((ExpressionNode) rootNodes.get(1)).getExpressions().size());
+        assertEquals("next", ((TextNode) rootNodes.get(2)).getValue());
     }
 
     private void assertParserError(String template, String message, int line) {

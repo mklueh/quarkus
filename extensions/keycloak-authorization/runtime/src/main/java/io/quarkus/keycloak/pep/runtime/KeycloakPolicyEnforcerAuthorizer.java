@@ -18,6 +18,7 @@ import org.keycloak.representations.adapters.config.AdapterConfig;
 import org.keycloak.representations.adapters.config.PolicyEnforcerConfig;
 
 import io.quarkus.oidc.OidcTenantConfig;
+import io.quarkus.oidc.OidcTenantConfig.Tls.Verification;
 import io.quarkus.oidc.runtime.OidcConfig;
 import io.quarkus.security.identity.SecurityIdentity;
 import io.quarkus.security.runtime.QuarkusSecurityIdentity;
@@ -71,7 +72,7 @@ public class KeycloakPolicyEnforcerAuthorizer
                         if (context != null) {
                             String scopes = permission.getActions();
 
-                            if (scopes == null) {
+                            if (scopes == null || scopes.isEmpty()) {
                                 return Uni.createFrom().item(context.hasResourcePermission(permission.getName()));
                             }
 
@@ -102,6 +103,11 @@ public class KeycloakPolicyEnforcerAuthorizer
 
         adapterConfig.setResource(oidcConfig.defaultTenant.getClientId().get());
         adapterConfig.setCredentials(getCredentials(oidcConfig.defaultTenant));
+
+        if (oidcConfig.defaultTenant.tls.getVerification() == Verification.NONE) {
+            adapterConfig.setDisableTrustManager(true);
+            adapterConfig.setAllowAnyHostname(true);
+        }
 
         PolicyEnforcerConfig enforcerConfig = getPolicyEnforcerConfig(config, adapterConfig);
 
@@ -147,8 +153,7 @@ public class KeycloakPolicyEnforcerAuthorizer
             PolicyEnforcerConfig enforcerConfig = new PolicyEnforcerConfig();
 
             enforcerConfig.setLazyLoadPaths(config.policyEnforcer.lazyLoadPaths);
-            enforcerConfig.setEnforcementMode(
-                    PolicyEnforcerConfig.EnforcementMode.valueOf(config.policyEnforcer.enforcementMode));
+            enforcerConfig.setEnforcementMode(config.policyEnforcer.enforcementMode);
             enforcerConfig.setHttpMethodAsScope(config.policyEnforcer.httpMethodAsScope);
 
             KeycloakPolicyEnforcerConfig.KeycloakConfigPolicyEnforcer.PathCacheConfig pathCache = config.policyEnforcer.pathCache;

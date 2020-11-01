@@ -1,6 +1,5 @@
 package io.quarkus.it.kafka.sasl;
 
-import java.io.File;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Properties;
@@ -14,7 +13,7 @@ import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.common.config.SslConfigs;
+import org.apache.kafka.common.config.SaslConfigs;
 import org.apache.kafka.common.serialization.IntegerDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 
@@ -40,27 +39,26 @@ public class SaslKafkaEndpoint {
         return records.iterator().next().value();
     }
 
-    private static void addSSL(Properties props) {
-        File sslDir = new File("src/test/resources");
-        File tsFile = new File(sslDir, "kafka-truststore.p12");
-        props.setProperty(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, "SSL");
-        props.setProperty(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, tsFile.getPath());
-        props.setProperty(SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG, "Z_pkTh9xgZovK4t34cGB2o6afT4zZg0L");
-        props.setProperty(SslConfigs.SSL_TRUSTSTORE_TYPE_CONFIG, "PKCS12");
-        props.setProperty(SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG, "");
+    private static void addJAAS(Properties props) {
+        props.setProperty(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, "SASL_PLAINTEXT");
+        props.setProperty(SaslConfigs.SASL_MECHANISM, "PLAIN");
+        props.setProperty(SaslConfigs.SASL_JAAS_CONFIG,
+                "org.apache.kafka.common.security.plain.PlainLoginModule required "
+                        + "username=\"client\" "
+                        + "password=\"client-secret\";");
     }
 
     public static KafkaConsumer<Integer, String> createConsumer() {
         Properties props = new Properties();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:19093");
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:19094");
         props.put(ConsumerConfig.GROUP_ID_CONFIG, "test-consumer");
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, IntegerDeserializer.class.getName());
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "true");
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        addSSL(props);
+        addJAAS(props);
         KafkaConsumer<Integer, String> consumer = new KafkaConsumer<>(props);
-        consumer.subscribe(Collections.singletonList("test-ssl-consumer"));
+        consumer.subscribe(Collections.singletonList("test-sasl-consumer"));
         return consumer;
     }
 }

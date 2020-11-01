@@ -23,9 +23,14 @@ import java.util.Properties;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.logging.Handler;
+import java.util.logging.LogManager;
+import java.util.logging.LogRecord;
 import java.util.stream.Collectors;
 
+import org.jboss.logmanager.Logger;
 import org.jboss.shrinkwrap.api.ShrinkWrap;
 import org.jboss.shrinkwrap.api.exporter.ExplodedExporter;
 import org.jboss.shrinkwrap.api.spec.JavaArchive;
@@ -66,8 +71,14 @@ public class QuarkusUnitTest
         implements BeforeAllCallback, AfterAllCallback, BeforeEachCallback, AfterEachCallback,
         InvocationInterceptor {
 
+    public static final String THE_BUILD_WAS_EXPECTED_TO_FAIL = "The build was expected to fail";
+
+    private static final Logger rootLogger;
+    private Handler[] originalHandlers;
+
     static {
         System.setProperty("java.util.logging.manager", "org.jboss.logmanager.LogManager");
+        rootLogger = (Logger) LogManager.getLogManager().getLogger("");
     }
 
     boolean started = false;
@@ -77,7 +88,10 @@ public class QuarkusUnitTest
     private Supplier<JavaArchive> archiveProducer;
     private List<Consumer<BuildChainBuilder>> buildChainCustomizers = new ArrayList<>();
     private Runnable afterUndeployListener;
+
     private String logFileName;
+    private InMemoryLogHandler inMemoryLogHandler = new InMemoryLogHandler((r) -> false);
+    private Consumer<List<LogRecord>> assertLogRecords;
 
     private static final Timer timeoutTimer = new Timer("Test thread dump timer");
     private volatile TimerTask timeoutTask;
@@ -151,6 +165,28 @@ public class QuarkusUnitTest
 
     public QuarkusUnitTest setLogFileName(String logFileName) {
         this.logFileName = logFileName;
+        return this;
+    }
+
+    public QuarkusUnitTest setLogRecordPredicate(Predicate<LogRecord> predicate) {
+        this.inMemoryLogHandler = new InMemoryLogHandler(predicate);
+        return this;
+    }
+
+    public List<LogRecord> getLogRecords() {
+        return inMemoryLogHandler.records;
+    }
+
+    public void clearLogRecords() {
+        inMemoryLogHandler.clearRecords();
+    }
+
+    public QuarkusUnitTest assertLogRecords(Consumer<List<LogRecord>> assertLogRecords) {
+        if (this.assertLogRecords != null) {
+            throw new IllegalStateException("Don't set the a log record assertion twice"
+                    + " to avoid shadowing out the first call.");
+        }
+        this.assertLogRecords = assertLogRecords;
         return this;
     }
 
@@ -306,6 +342,9 @@ public class QuarkusUnitTest
             beforeAllCustomizer.run();
         }
         originalClassLoader = Thread.currentThread().getContextClassLoader();
+        originalHandlers = rootLogger.getHandlers();
+        rootLogger.addHandler(inMemoryLogHandler);
+
         timeoutTask = new TimerTask() {
             @Override
             public void run() {
@@ -329,6 +368,7 @@ public class QuarkusUnitTest
         ExtensionContext.Store store = extensionContext.getRoot().getStore(ExtensionContext.Namespace.GLOBAL);
         if (store.get(TestResourceManager.class.getName()) == null) {
             TestResourceManager manager = new TestResourceManager(extensionContext.getRequiredTestClass());
+            manager.init();
             manager.start();
             store.put(TestResourceManager.class.getName(), new ExtensionContext.Store.CloseableResource() {
 
@@ -384,6 +424,11 @@ public class QuarkusUnitTest
                         .setProjectRoot(testLocation)
                         .setForcedDependencies(forcedDependencies.stream().map(d -> new AppDependency(d, "compile"))
                                 .collect(Collectors.toList()));
+                if (!forcedDependencies.isEmpty()) {
+                    //if we have forced dependencies we can't use the cache
+                    //as it can screw everything up
+                    builder.setDisableClasspathCache(true);
+                }
                 if (!allowTestClassOutsideDeployment) {
                     builder
                             .setBaseClassLoader(
@@ -399,7 +444,7 @@ public class QuarkusUnitTest
                 //we restore the CL at the end of the test
                 Thread.currentThread().setContextClassLoader(runningQuarkusApplication.getClassLoader());
                 if (assertException != null) {
-                    fail("The build was expected to fail");
+                    fail(THE_BUILD_WAS_EXPECTED_TO_FAIL);
                 }
                 started = true;
                 System.setProperty("test.url", TestHTTPResourceManager.getUri(runningQuarkusApplication));
@@ -418,6 +463,10 @@ public class QuarkusUnitTest
             } catch (Throwable e) {
                 started = false;
                 if (assertException != null) {
+                    if (e instanceof AssertionError && e.getMessage().equals(THE_BUILD_WAS_EXPECTED_TO_FAIL)) {
+                        //don't pass the 'no failure' assertion into the assert exception function
+                        throw e;
+                    }
                     if (e instanceof RuntimeException) {
                         Throwable cause = e.getCause();
                         if (cause != null && cause instanceof BuildException) {
@@ -455,6 +504,12 @@ public class QuarkusUnitTest
 
     @Override
     public void afterAll(ExtensionContext extensionContext) throws Exception {
+        if (assertLogRecords != null) {
+            assertLogRecords.accept(inMemoryLogHandler.records);
+        }
+        rootLogger.setHandlers(originalHandlers);
+        inMemoryLogHandler.clearRecords();
+
         try {
             if (runningQuarkusApplication != null) {
                 runningQuarkusApplication.close();

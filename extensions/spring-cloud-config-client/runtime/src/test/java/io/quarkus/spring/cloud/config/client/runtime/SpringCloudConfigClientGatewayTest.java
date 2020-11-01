@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.entry;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.Optional;
 
 import org.apache.commons.io.IOUtils;
@@ -18,7 +19,7 @@ import com.github.tomakehurst.wiremock.client.WireMock;
 
 class SpringCloudConfigClientGatewayTest {
 
-    private static final int MOCK_SERVER_PORT = 8089;
+    private static final int MOCK_SERVER_PORT = 9300;
     private static final WireMockServer wireMockServer = new WireMockServer(MOCK_SERVER_PORT);
 
     private final SpringCloudConfigClientGateway sut = new DefaultSpringCloudConfigClientGateway(
@@ -35,7 +36,7 @@ class SpringCloudConfigClientGatewayTest {
     }
 
     @Test
-    void testBasicExchange() throws IOException {
+    void testBasicExchange() throws Exception {
         final String applicationName = "foo";
         final String profile = "dev";
         wireMockServer.stubFor(WireMock.get(String.format("/%s/%s", applicationName, profile)).willReturn(WireMock
@@ -76,6 +77,10 @@ class SpringCloudConfigClientGatewayTest {
         springCloudConfigClientConfig.readTimeout = Duration.ZERO;
         springCloudConfigClientConfig.username = Optional.empty();
         springCloudConfigClientConfig.password = Optional.empty();
+        springCloudConfigClientConfig.trustStore = Optional.empty();
+        springCloudConfigClientConfig.keyStore = Optional.empty();
+        springCloudConfigClientConfig.trustCerts = false;
+        springCloudConfigClientConfig.headers = new HashMap<>();
         return springCloudConfigClientConfig;
     }
 }

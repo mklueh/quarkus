@@ -65,12 +65,19 @@ final class Beans {
                     name = nameValue.asString();
                 } else {
                     name = getDefaultName(beanClass);
+                    annotation = normalizedNamedQualifier(name, annotation);
                 }
             }
             Collection<AnnotationInstance> qualifierCollection = beanDeployment.extractQualifiers(annotation);
             for (AnnotationInstance qualifierAnnotation : qualifierCollection) {
                 // Qualifiers
                 qualifiers.add(qualifierAnnotation);
+            }
+            // Treat the case when an additional bean defining annotation that is also a qualifier declares the default scope
+            StereotypeInfo stereotype = beanDeployment.getStereotype(annotation.name());
+            if (stereotype != null) {
+                stereotypes.add(stereotype);
+                continue;
             }
             if (!qualifierCollection.isEmpty()) {
                 // we needn't process it further, the annotation was a qualifier (or multiple repeating ones)
@@ -102,11 +109,6 @@ final class Beans {
                 scopes.add(scopeAnnotation);
                 continue;
             }
-            StereotypeInfo stereotype = beanDeployment.getStereotype(annotation.name());
-            if (stereotype != null) {
-                stereotypes.add(stereotype);
-                continue;
-            }
         }
 
         if (scopes.size() > 1) {
@@ -135,7 +137,7 @@ final class Beans {
             if (alternativePriority == null) {
                 // after all attempts, priority is still null, bean will be ignored
                 LOGGER.infof(
-                        "Ignoring bean defined via %s - declared as an @Alternative but not selected by @Priority, @AlernativePriority or quarkus.arc.selected-alternatives",
+                        "Ignoring bean defined via %s - declared as an @Alternative but not selected by @Priority, @AlternativePriority or quarkus.arc.selected-alternatives",
                         beanClass.name());
                 return null;
             }
@@ -150,7 +152,7 @@ final class Beans {
     private static ScopeInfo inheritScope(ClassInfo beanClass, BeanDeployment beanDeployment) {
         DotName superClassName = beanClass.superName();
         while (!superClassName.equals(DotNames.OBJECT)) {
-            ClassInfo classFromIndex = getClassByName(beanDeployment.getIndex(), superClassName);
+            ClassInfo classFromIndex = getClassByName(beanDeployment.getBeanArchiveIndex(), superClassName);
             if (classFromIndex == null) {
                 // class not in index
                 LOGGER.warnf("Unable to determine scope for bean %s using inheritance because its super class " +
@@ -201,6 +203,7 @@ final class Beans {
                     name = nameValue.asString();
                 } else {
                     name = getDefaultName(producerMethod);
+                    annotation = normalizedNamedQualifier(name, annotation);
                 }
             }
             Collection<AnnotationInstance> qualifierCollection = beanDeployment.extractQualifiers(annotation);
@@ -300,6 +303,7 @@ final class Beans {
                     name = nameValue.asString();
                 } else {
                     name = producerField.name();
+                    annotation = normalizedNamedQualifier(name, annotation);
                 }
             }
             Collection<AnnotationInstance> qualifierCollection = beanDeployment.extractQualifiers(annotation);
@@ -370,6 +374,13 @@ final class Beans {
         BeanInfo bean = new BeanInfo(producerField, beanDeployment, scope, types, qualifiers, Collections.emptyList(),
                 declaringBean, disposer, alternativePriority, stereotypes, name, isDefaultBean);
         return bean;
+    }
+
+    private static AnnotationInstance normalizedNamedQualifier(String defaultedName, AnnotationInstance originalAnnotation) {
+        // Replace @Named("") with @Named("foo")
+        // This is not explicitly defined by the spec but better align with the RI behavior
+        return AnnotationInstance.create(DotNames.NAMED, originalAnnotation.target(),
+                Collections.singletonList(AnnotationValue.createStringValue("value", defaultedName)));
     }
 
     private static DefinitionException multipleScopesFound(String baseMessage, List<ScopeInfo> scopes) {
@@ -475,27 +486,28 @@ final class Beans {
         List<BeanInfo> resolved = deployment.getBeanResolver().resolve(injectionPoint.getTypeAndQualifiers());
         BeanInfo selected = null;
         if (resolved.isEmpty()) {
+            List<BeanInfo> typeMatching = deployment.getBeanResolver().findTypeMatching(injectionPoint.getRequiredType());
+
             StringBuilder message = new StringBuilder("Unsatisfied dependency for type ");
-            message.append(injectionPoint.getRequiredType());
-            message.append(" and qualifiers ");
-            message.append(injectionPoint.getRequiredQualifiers());
-            message.append("\n\t- java member: ");
-            message.append(injectionPoint.getTargetInfo());
-            message.append("\n\t- declared on ");
-            message.append(target);
+            addStandardErroneousDependencyMessage(target, injectionPoint, message);
+            if (!typeMatching.isEmpty()) {
+                message.append("\n\tThe following beans match by type, but none have matching qualifiers:");
+                for (BeanInfo beanInfo : typeMatching) {
+                    message.append("\n\t\t- ");
+                    message.append("Bean [class=");
+                    message.append(beanInfo.getImplClazz());
+                    message.append(", qualifiers=");
+                    message.append(beanInfo.getQualifiers());
+                    message.append("]");
+                }
+            }
             errors.add(new UnsatisfiedResolutionException(message.toString()));
         } else if (resolved.size() > 1) {
             // Try to resolve the ambiguity
             selected = resolveAmbiguity(resolved);
             if (selected == null) {
                 StringBuilder message = new StringBuilder("Ambiguous dependencies for type ");
-                message.append(injectionPoint.getRequiredType());
-                message.append(" and qualifiers ");
-                message.append(injectionPoint.getRequiredQualifiers());
-                message.append("\n\t- java member: ");
-                message.append(injectionPoint.getTargetInfo());
-                message.append("\n\t- declared on ");
-                message.append(target);
+                addStandardErroneousDependencyMessage(target, injectionPoint, message);
                 message.append("\n\t- available beans:\n\t\t- ");
                 message.append(resolved.stream().map(Object::toString).collect(Collectors.joining("\n\t\t- ")));
                 errors.add(new AmbiguousResolutionException(message.toString()));
@@ -506,6 +518,17 @@ final class Beans {
         if (selected != null) {
             injectionPoint.resolve(selected);
         }
+    }
+
+    private static void addStandardErroneousDependencyMessage(InjectionTargetInfo target, InjectionPointInfo injectionPoint,
+            StringBuilder message) {
+        message.append(injectionPoint.getRequiredType());
+        message.append(" and qualifiers ");
+        message.append(injectionPoint.getRequiredQualifiers());
+        message.append("\n\t- java member: ");
+        message.append(injectionPoint.getTargetInfo());
+        message.append("\n\t- declared on ");
+        message.append(target);
     }
 
     static BeanInfo resolveAmbiguity(List<BeanInfo> resolved) {
@@ -667,9 +690,9 @@ final class Beans {
                 if (bean.getDeployment().transformUnproxyableClasses) {
                     DotName superName = beanClass.superName();
                     if (!DotNames.OBJECT.equals(superName)) {
-                        ClassInfo superClass = bean.getDeployment().getIndex().getClassByName(beanClass.superName());
+                        ClassInfo superClass = bean.getDeployment().getBeanArchiveIndex().getClassByName(beanClass.superName());
                         if (superClass == null || !superClass.hasNoArgsConstructor()) {
-                            // Bean class extend a class without no-args constructor
+                            // Bean class extends a class without no-args constructor
                             // It is not possible to generate a no-args constructor reliably
                             superName = null;
                         }
@@ -679,9 +702,10 @@ final class Beans {
                         bytecodeTransformerConsumer.accept(new BytecodeTransformer(beanClass.name().toString(),
                                 new NoArgConstructorTransformFunction(superClassName)));
                     } else {
-                        errors.add(new DeploymentException(String
-                                .format("It is not possible to add a synthetic constructor with no parameters to the unproxyable bean class: %s",
-                                        beanClass)));
+                        errors.add(new DeploymentException(
+                                "It's not possible to add a synthetic constructor with no parameters to the unproxyable bean class: "
+                                        +
+                                        beanClass));
                     }
                 } else {
                     errors.add(new DeploymentException(String
@@ -706,7 +730,7 @@ final class Beans {
             }
 
         } else if (bean.isProducerField() || bean.isProducerMethod()) {
-            ClassInfo returnTypeClass = getClassByName(bean.getDeployment().getIndex(),
+            ClassInfo returnTypeClass = getClassByName(bean.getDeployment().getBeanArchiveIndex(),
                     bean.isProducerMethod() ? bean.getTarget().get().asMethod().returnType()
                             : bean.getTarget().get().asField().type());
             // can be null for primitive types
@@ -729,21 +753,22 @@ final class Beans {
                     if (bean.getDeployment().transformUnproxyableClasses) {
                         DotName superName = returnTypeClass.superName();
                         if (!DotNames.OBJECT.equals(superName)) {
-                            ClassInfo superClass = bean.getDeployment().getIndex().getClassByName(returnTypeClass.superName());
+                            ClassInfo superClass = bean.getDeployment().getBeanArchiveIndex()
+                                    .getClassByName(returnTypeClass.superName());
                             if (superClass == null || !superClass.hasNoArgsConstructor()) {
-                                // Bean class extend a class without no-args constructor
+                                // Bean class extends a class without no-args constructor
                                 // It is not possible to generate a no-args constructor reliably
                                 superName = null;
-                            } else {
-                                errors.add(new DeploymentException(String
-                                        .format("It is not possible to add a synthetic constructor with no parameters to the unproxyable return type of: %s",
-                                                bean)));
                             }
                         }
                         if (superName != null) {
                             String superClassName = superName.toString().replace('.', '/');
                             bytecodeTransformerConsumer.accept(new BytecodeTransformer(returnTypeClass.name().toString(),
                                     new NoArgConstructorTransformFunction(superClassName)));
+                        } else {
+                            errors.add(new DeploymentException(String
+                                    .format("It's not possible to add a synthetic constructor with no parameters to the unproxyable return type of "
+                                            + bean)));
                         }
                     } else {
                         errors.add(new DefinitionException(String
@@ -764,6 +789,37 @@ final class Beans {
                     }
                 }
             }
+        } else if (bean.isSynthetic()) {
+            // this is for synthetic beans that need to be proxied but their classes don't have no-args constructor
+            ClassInfo beanClass = getClassByName(bean.getDeployment().getBeanArchiveIndex(), bean.getBeanClass());
+            MethodInfo noArgsConstructor = beanClass.method(Methods.INIT);
+            if (bean.getScope().isNormal() && !Modifier.isInterface(beanClass.flags()) && noArgsConstructor == null) {
+                if (bean.getDeployment().transformUnproxyableClasses) {
+                    DotName superName = beanClass.superName();
+                    if (!DotNames.OBJECT.equals(superName)) {
+                        ClassInfo superClass = bean.getDeployment().getBeanArchiveIndex().getClassByName(beanClass.superName());
+                        if (superClass == null || !superClass.hasNoArgsConstructor()) {
+                            // Bean class extends a class without no-args constructor
+                            // It is not possible to generate a no-args constructor reliably
+                            superName = null;
+                        }
+                    }
+                    if (superName != null) {
+                        String superClassName = superName.toString().replace('.', '/');
+                        bytecodeTransformerConsumer.accept(new BytecodeTransformer(beanClass.name().toString(),
+                                new NoArgConstructorTransformFunction(superClassName)));
+                    } else {
+                        errors.add(new DeploymentException(
+                                "It's not possible to add a synthetic constructor with no parameters to the unproxyable bean class: "
+                                        +
+                                        beanClass));
+                    }
+                } else {
+                    errors.add(new DeploymentException(String
+                            .format("Normal scoped beans must declare a non-private constructor with no parameters: %s",
+                                    bean)));
+                }
+            }
         }
     }
 
@@ -773,7 +829,7 @@ final class Beans {
         }
         if (type.kind() == Type.Kind.CLASS) {
             // Index the class additionally if needed
-            getClassByName(beanDeployment.getIndex(), type.name());
+            getClassByName(beanDeployment.getBeanArchiveIndex(), type.name());
         } else {
             analyzeType(type, beanDeployment);
         }

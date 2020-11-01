@@ -2,14 +2,15 @@ package io.quarkus.platform.descriptor.resolver.json;
 
 import static io.quarkus.platform.tools.ToolsUtils.getProperty;
 
-import com.eclipsesource.json.Json;
-import com.eclipsesource.json.JsonObject;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.quarkus.bootstrap.model.AppArtifact;
 import io.quarkus.bootstrap.resolver.AppModelResolver;
 import io.quarkus.bootstrap.resolver.AppModelResolverException;
 import io.quarkus.bootstrap.resolver.BootstrapAppModelResolver;
 import io.quarkus.bootstrap.resolver.maven.MavenArtifactResolver;
 import io.quarkus.bootstrap.resolver.maven.workspace.ModelUtils;
+import io.quarkus.devtools.messagewriter.MessageWriter;
 import io.quarkus.maven.utilities.MojoUtils;
 import io.quarkus.platform.descriptor.QuarkusPlatformDescriptor;
 import io.quarkus.platform.descriptor.loader.json.ArtifactResolver;
@@ -19,8 +20,6 @@ import io.quarkus.platform.descriptor.loader.json.QuarkusJsonPlatformDescriptorL
 import io.quarkus.platform.descriptor.loader.json.QuarkusJsonPlatformDescriptorLoaderContext;
 import io.quarkus.platform.descriptor.loader.json.ResourceLoader;
 import io.quarkus.platform.descriptor.loader.json.ZipResourceLoader;
-import io.quarkus.platform.tools.DefaultMessageWriter;
-import io.quarkus.platform.tools.MessageWriter;
 import io.quarkus.platform.tools.ToolsConstants;
 import io.quarkus.platform.tools.ToolsUtils;
 import java.io.BufferedReader;
@@ -146,7 +145,7 @@ public class QuarkusJsonPlatformDescriptorResolver {
         if (artifactResolver == null) {
             try {
                 artifactResolver = new BootstrapAppModelResolver(MavenArtifactResolver.builder().build());
-            } catch (AppModelResolverException e) {
+            } catch (Exception e) {
                 throw new IllegalStateException("Failed to initialize the Maven artifact resolver", e);
             }
         }
@@ -177,7 +176,7 @@ public class QuarkusJsonPlatformDescriptorResolver {
 
     private void ensureLoggerInitialized() {
         if (log == null) {
-            log = new DefaultMessageWriter();
+            log = MessageWriter.info();
         }
     }
 
@@ -191,8 +190,8 @@ public class QuarkusJsonPlatformDescriptorResolver {
         // Resolve the Quarkus version used by the platform
         final String quarkusCoreVersion;
         try (BufferedReader reader = Files.newBufferedReader(jsonFile)) {
-            final JsonObject jsonObject = Json.parse(reader).asObject();
-            quarkusCoreVersion = jsonObject.getString("quarkus-core-version", null);
+            JsonNode node = new ObjectMapper().readTree(reader);
+            quarkusCoreVersion = node.get("quarkus-core-version").asText(null);
             if (quarkusCoreVersion == null) {
                 throw new IllegalStateException("Failed to determine the Quarkus Core version for " + jsonFile);
             }
@@ -711,12 +710,7 @@ public class QuarkusJsonPlatformDescriptorResolver {
         } catch (IOException e) {
             throw new IllegalStateException("Failed to load quarkus.properties from the classpath", e);
         }
-        final String quarkusVersion = props.getProperty("plugin-version");
-        if (quarkusVersion == null) {
-            throw new IllegalStateException(
-                    "quarkus.properties loaded from the classpath is missing plugin-version property");
-        }
-        return quarkusVersion;
+        return ToolsUtils.requireQuarkusCoreVersion(props);
     }
 
     private static InputStream getCpResourceAsStream(String name) {

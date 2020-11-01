@@ -32,7 +32,7 @@ The solution is located in the `config-quickstart` {quickstarts-tree-url}/config
 
 First, we need a new project. Create a new project with the following command:
 
-[source,shell,subs=attributes+]
+[source,bash,subs=attributes+]
 ----
 mvn io.quarkus:quarkus-maven-plugin:{quarkus-version}:create \
     -DprojectGroupId=org.acme \
@@ -63,7 +63,7 @@ String message;
 ----
 
 NOTE: When injecting a configured value, you can use `@Inject @ConfigProperty` or just `@ConfigProperty`.
-The `@Inject` annotation is not necessary for members annotated with `@ConfigProperty`, a behavior which differs from https://microprofile.io/project/eclipse/microprofile-config[MicroProfile Config]
+The `@Inject` annotation is not necessary for members annotated with `@ConfigProperty`, a behavior which differs from https://microprofile.io/project/eclipse/microprofile-config[MicroProfile Config].
 
 Edit the `org.acme.config.GreetingResource`, and introduce the following configuration properties:
 
@@ -99,7 +99,7 @@ public String hello() {
 By default, Quarkus reads `application.properties`.
 Edit the `src/main/resources/application.properties` with the following content:
 
-[source,shell]
+[source,properties]
 ----
 # Your configuration properties
 greeting.message = hello
@@ -263,8 +263,8 @@ This does not apply to `Optional` fields and fields with a default value.
 When using a regular class annotated with `@ConfigProperties` the class doesn't necessarily have to declare getters and setters.
 Having simple public non-final fields is valid as well.
 
-Furthermore the configuration classes support nested object configuration. Suppose there was a need to have an extra layer
-of greeting configuration named `hidden` that would contain a few fields. This could be achieved like so:
+Furthermore, the configuration classes support nested object configuration. Suppose there was a need to have an extra layer
+of greeting configuration named `content` that would contain a few fields. This could be achieved like so:
 
 [source,java]
 ----
@@ -274,9 +274,9 @@ public class GreetingConfiguration {
     public String message;
     public String suffix = "!";
     public Optional<String> name;
-    public HiddenConfig hidden; <1>
+    public ContentConfig content; <1>
 
-    public static class HiddenConfig {
+    public static class ContentConfig {
         public Integer prizeAmount;
         public List<String> recipients;
     }
@@ -290,8 +290,8 @@ Setting the properties would occur in the normal manner, for example in `applica
 ----
 greeting.message = hello
 greeting.name = quarkus
-greeting.hidden.prizeAmount=10
-greeting.hidden.recipients=Jane,John
+greeting.content.prize-amount=10
+greeting.content.recipients=Jane,John
 ----
 
 Furthermore, classes annotated with `@ConfigProperties` can be annotated with Bean Validation annotations similar to the following example:
@@ -308,10 +308,48 @@ public class GreetingConfiguration {
 }
 ----
 
+WARNING: For validation to work, the `quarkus-hibernate-validator` extension needs to be present.
+
 If the validation fails with the given configuration, the application will fail to start and indicate the corresponding validation errors in the log.
 
 In the case of an interface being annotated with `@ConfigProperties`, the interface is allowed to extend other interfaces and methods from
 the entire interface hierarchy are used to bind properties.
+
+=== Using same ConfigProperties with different prefixes
+
+Quarkus also supports the use of the same `@ConfigProperties` object with different prefixes for each injection point using the `io.quarkus.arc.config.@ConfigPrefix` annotation.
+Say for example that `GreetingConfiguration` from above needs to be used for both the `greeting` prefix and the `other` prefix.
+In that case the code would look like so:
+
+`GreetingConfiguration.java`
+[source,java]
+----
+@ConfigProperties(prefix = "greeting")
+public class GreetingConfiguration {
+
+    @Size(min = 20)
+    public String message;
+    public String suffix = "!";
+
+}
+----
+
+`SomeBean.java`
+[source,java]
+----
+@ApplicationScoped
+public class SomeBean {
+
+    @Inject <1>
+    GreetingConfiguration greetingConfiguration;
+
+    @ConfigPrefix("other") <2>
+    GreetingConfiguration otherConfiguration;
+
+}
+----
+<1> At this injection point `greetingConfiguration` will use the `greeting` prefix since that is what has been defined on `@ConfigProperties`.
+<2> At this injection point `otherConfiguration` will use the `other` prefix from `@ConfigPrefix` instead of the `greeting` prefix. Notice that in this case `@Inject` is not required.
 
 == Configuring Quarkus
 
@@ -329,14 +367,14 @@ In the previous examples using `quarkus.message` instead of `greeting.message` w
 
 === List of all configuration properties
 
-All the Quarkus configuration properties are link:all-config[documented and searcheable].
+All the Quarkus configuration properties are link:all-config[documented and searchable].
 
 === Generating configuration for your application
 
 It is also possible to generate an example `application.properties` with all known configuration properties, to make
 it easy to see what Quarkus configuration options are available. To do this, run:
 
-[source,shell]
+[source,bash]
 --
 ./mvnw quarkus:generate-config
 --
@@ -357,7 +395,7 @@ when applicable. For example this HTTP port config entry will appear as:
 Rather than generating an example config file, you can also add these to you actual config file by setting the `-Dfile`
 parameter:
 
-[source,shell]
+[source,bash]
 --
 ./mvnw quarkus:generate-config -Dfile=application.properties
 --
@@ -371,7 +409,7 @@ Quarkus does much of its configuration and bootstrap at build time.
 Most properties will then be read and set during the build time step.
 To change them, make sure to repackage your application.
 
-[source,shell]
+[source,bash]
 --
 ./mvnw clean package
 --
@@ -397,6 +435,8 @@ _will also_ be taken into account.
 
 NOTE: Environment variables names are following the conversion rules of link:https://github.com/eclipse/microprofile-config/blob/master/spec/src/main/asciidoc/configsources.asciidoc#default-configsources[Eclipse MicroProfile]
 
+NOTE: Environment variables without a configuration profile defined in `.env` file will overwrite all its related profiles in `application.properties`, e.g. `%test.application.value` is overwritten by `APPLICATION_VALUE` in `.env` file.
+
 NOTE: The `config/application.properties` features is available in development mode as well. To make use of it, `config/application.properties` needs to be placed inside the build tool's output directory (`target` for Maven and `build/classes/java/main` for Gradle).
 Keep in mind however that any cleaning operation from the build tool like `mvn clean` or `gradle clean` will remove the `config` directory as well.
 
@@ -414,6 +454,14 @@ quarkus.http.port=9090
 ----
 
 The Quarkus HTTP port will be 9090, unless the `dev` profile is active, in which case it will be 8181.
+
+To use profiles in the `.env` file, you can follow a `_{PROFILE}_CONFIG_KEY=value` pattern. An equivalent of the above example in an `.env` file would be:
+
+[source,.env]
+----
+QUARKUS_HTTP_PORT=9090
+_DEV_QUARKUS_HTTP_PORT=8181
+----
 
 By default Quarkus has three profiles, although it is possible to use as many as you like. The default profiles are:
 
@@ -478,8 +526,8 @@ Another example would be defining different database servers depending on the pr
 
 [source,properties]
 ----
-%dev.quarkus.datasource.url=jdbc:mysql://localhost:3306/mydatabase?useSSL=false
-quarkus.datasource.url=jdbc:mysql://remotehost:3306/mydatabase?useSSL=false
+%dev.quarkus.datasource.jdbc.url=jdbc:mysql://localhost:3306/mydatabase?useSSL=false
+quarkus.datasource.jdbc.url=jdbc:mysql://remotehost:3306/mydatabase?useSSL=false
 ----
 
 can be simplified by having:
@@ -489,12 +537,13 @@ can be simplified by having:
 %dev.application.server=localhost
 application.server=remotehost
 
-quarkus.datasource.url=jdbc:mysql://${application.server}:3306/mydatabase?useSSL=false
+quarkus.datasource.jdbc.url=jdbc:mysql://${application.server}:3306/mydatabase?useSSL=false
 ----
 
 It does result in one more line in this example but the value of `application.server` can be reused in other properties,
 diminishing the possibility of typos and providing more flexibility in property definitions.
 
+[#combine-property-env-var]
 === Combining Property Expressions and Environment Variables
 
 Quarkus also supports the combination of both property expressions and environment variables.
@@ -537,7 +586,7 @@ corresponding system property, or setting the corresponding environment variable
 ==== Miscellaneous
 The default Quarkus application runtime profile is set to the profile used to build the application.
 For example:
-[source,shell]
+[source,bash]
 ----
 ./mvnw package -Pnative -Dquarkus.profile=prod-aws
 ./target/my-app-1.0-runner // <1>
@@ -571,7 +620,7 @@ public class MicroProfileCustomValue {
 
     public MicroProfileCustomValue(int number) {
         this.number = number;
-    };
+    }
 
     public int getNumber() {
         return number;
@@ -703,8 +752,9 @@ You should decide and keep one configuration type to avoid errors.
 # YAML supports comments
 quarkus:
   datasource:
-    url: jdbc:postgresql://localhost:5432/some-database
-    driver: org.postgresql.Driver
+    db-kind: postgresql
+    jdbc:
+      url: jdbc:postgresql://localhost:5432/some-database
     username: quarkus
     password: quarkus
 
@@ -737,8 +787,9 @@ Just add the `%profile` wrapped in quotation marks before defining the key-value
 "%dev":
   quarkus:
     datasource:
-      url: jdbc:postgresql://localhost:5432/some-database
-      driver: org.postgresql.Driver
+      db-kind: postgresql
+      jdbc:
+        url: jdbc:postgresql://localhost:5432/some-database
       username: quarkus
       password: quarkus
 ----
@@ -750,7 +801,7 @@ However, structured formats like YAML naively only support a subset of the possi
 For example, consider the two configuration properties `quarkus.http.cors` and `quarkus.http.cors.methods`.
 One property is the prefix of another, so it may not be immediately evident how to specify both keys in your YAML configuration.
 
-This is solved by using a null key (normally represented by `~`) for any YAML property which is a prefix of another one.  Here's an example:
+This is solved by using a `null` key (normally represented by `~`) for any YAML property which is a prefix of another one.  Here's an example:
 
 .An example YAML configuration resolving prefix-related key name conflicts
 [source,yaml]
@@ -762,13 +813,22 @@ quarkus:
       methods: GET,PUT,POST
 ----
 
-In general, null YAML keys are not included in assembly of the configuration property name, allowing them to be used to
+In general, `null` YAML keys are not included in assembly of the configuration property name, allowing them to be used to
 any level for disambiguating configuration keys.
 
 == More info on how to configure
 
-Quarkus relies on Eclipse MicroProfile and inherits its features.
+Quarkus relies on SmallRye Config and inherits its features.
 
-There are converters that convert your property file content from `String` to typed Java types. See the list link:https://github.com/eclipse/microprofile-config/blob/master/spec/src/main/asciidoc/converters.asciidoc[in the specification].
+SmallRye Config provides:
 
-// TODO: make Ken review this section and discuss SmallRye expansion.
+* Additional Config Sources
+* Additional Converters
+* Interceptors for configuration value resolution
+* Relocate Configuration Properties
+* Fallback Configuration Properties
+* Logging
+* Hide Secrets
+
+For more information, please check the
+link:https://smallrye.io/docs/smallrye-config/index.html[SmallRye Config documentation].

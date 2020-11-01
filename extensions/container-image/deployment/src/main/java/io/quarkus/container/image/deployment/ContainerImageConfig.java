@@ -1,5 +1,6 @@
 package io.quarkus.container.image.deployment;
 
+import java.util.List;
 import java.util.Optional;
 
 import io.quarkus.runtime.annotations.ConfigItem;
@@ -27,10 +28,24 @@ public class ContainerImageConfig {
     public Optional<String> tag;
 
     /**
+     * Additional tags of the container image.
+     */
+    @ConfigItem
+    public Optional<List<String>> additionalTags;
+
+    /**
      * The container registry to use
      */
     @ConfigItem
     public Optional<String> registry;
+
+    /**
+     * Represents the entire image string.
+     * If set, then {@code group}, {@code name}, {@code registry}, {@code tags}, {@code additionalTags}
+     * are ignored
+     */
+    @ConfigItem
+    public Optional<String> image;
 
     /**
      * The username to use to authenticate with the registry where the built image will be pushed
@@ -61,6 +76,13 @@ public class ContainerImageConfig {
      */
     @ConfigItem
     public boolean push;
+
+    /**
+     * The name of the container image extension to use (e.g. docker, jib, s2i).
+     * The option will be used in case multiple extensions are present.
+     */
+    @ConfigItem
+    public Optional<String> builder;
 
     /**
      * Since user.name which is default value can be uppercase and uppercase values are not allowed

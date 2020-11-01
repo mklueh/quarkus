@@ -13,6 +13,7 @@
 
     <artifactId>quarkus-core</artifactId>
     <name>Quarkus - Core - Runtime</name>
+    <description>Quarkus core components</description>
 
     <dependencies>
         <dependency>
@@ -71,7 +72,7 @@
         </dependency>
         <dependency>
             <groupId>org.jboss.slf4j</groupId>
-            <artifactId>slf4j-jboss-logging</artifactId>
+            <artifactId>slf4j-jboss-logmanager</artifactId>
         </dependency>
         <dependency>
             <groupId>org.graalvm.sdk</groupId>
@@ -80,10 +81,15 @@
         <dependency>
             <groupId>org.graalvm.nativeimage</groupId>
             <artifactId>svm</artifactId>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.wildfly.common</groupId>
             <artifactId>wildfly-common</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-bootstrap-runner</artifactId>
         </dependency>
 
         <!--
@@ -112,15 +118,23 @@
                 <artifactId>quarkus-bootstrap-maven-plugin</artifactId>
                 <configuration>
                     <parentFirstArtifacts>
+                        <parentFirstArtifact>io.quarkus:quarkus-bootstrap-runner</parentFirstArtifact>
+                        <parentFirstArtifact>io.smallrye.common:smallrye-common-io</parentFirstArtifact>
+                        <parentFirstArtifact>org.wildfly.common:wildfly-common</parentFirstArtifact>
                         <parentFirstArtifact>org.graalvm.sdk:graal-sdk</parentFirstArtifact>
                         <parentFirstArtifact>org.graalvm.nativeimage:svm</parentFirstArtifact>
                         <parentFirstArtifact>io.quarkus:quarkus-bootstrap-core</parentFirstArtifact>
                         <parentFirstArtifact>io.quarkus:quarkus-development-mode-spi</parentFirstArtifact>
+                        <parentFirstArtifact>io.quarkus:quarkus-bootstrap-app-model</parentFirstArtifact>
+                        <parentFirstArtifact>org.slf4j:slf4j-api</parentFirstArtifact>
+                        <parentFirstArtifact>org.jboss.slf4j:slf4j-jboss-logmanager</parentFirstArtifact>
                         <parentFirstArtifact>org.jboss.logmanager:jboss-logmanager-embedded</parentFirstArtifact>
                         <parentFirstArtifact>org.jboss.logging:jboss-logging</parentFirstArtifact>
                         <parentFirstArtifact>org.ow2.asm:asm</parentFirstArtifact>
                         <parentFirstArtifact>org.ow2.asm:asm-commons</parentFirstArtifact>
                         <parentFirstArtifact>org.apache.maven:maven-model</parentFirstArtifact>
+                        <parentFirstArtifact>org.codehaus.plexus:plexus-utils</parentFirstArtifact>
+                        <parentFirstArtifact>xml-apis:xml-apis</parentFirstArtifact>
                         <!--
                         This is a temporary fix, we need a better way to be able to
                         add these exclusions outside the quarkus-extension.properties file.

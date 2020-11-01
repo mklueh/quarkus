@@ -26,7 +26,8 @@ import org.jboss.jandex.Type;
 import io.quarkus.arc.deployment.GeneratedBeanBuildItem;
 import io.quarkus.arc.deployment.GeneratedBeanGizmoAdaptor;
 import io.quarkus.arc.deployment.UnremovableBeanBuildItem;
-import io.quarkus.deployment.Capabilities;
+import io.quarkus.deployment.Capability;
+import io.quarkus.deployment.Feature;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.builditem.ApplicationIndexBuildItem;
@@ -40,6 +41,7 @@ import io.quarkus.gizmo.MethodCreator;
 import io.quarkus.gizmo.MethodDescriptor;
 import io.quarkus.gizmo.ResultHandle;
 import io.quarkus.panache.common.deployment.PanacheEntityClassesBuildItem;
+import io.quarkus.security.AuthenticationFailedException;
 import io.quarkus.security.identity.SecurityIdentity;
 import io.quarkus.security.identity.request.TrustedAuthenticationRequest;
 import io.quarkus.security.identity.request.UsernamePasswordAuthenticationRequest;
@@ -73,12 +75,12 @@ class QuarkusSecurityJpaProcessor {
 
     @BuildStep
     FeatureBuildItem feature() {
-        return new FeatureBuildItem(FeatureBuildItem.SECURITY_JPA);
+        return new FeatureBuildItem(Feature.SECURITY_JPA);
     }
 
     @BuildStep
     CapabilityBuildItem capability() {
-        return new CapabilityBuildItem(Capabilities.SECURITY_JPA);
+        return new CapabilityBuildItem(Capability.SECURITY_JPA);
     }
 
     @BuildStep
@@ -167,9 +169,11 @@ class QuarkusSecurityJpaProcessor {
                 AssignableResultHandle userVar = methodCreator.createVariable(declaringClassTypeDescriptor);
                 methodCreator.assign(userVar, methodCreator.checkCast(user, declaringClassName));
 
-                // if(user == null) return null;
+                // if(user == null) throw new AuthenticationFailedException();
                 try (BytecodeCreator trueBranch = methodCreator.ifNull(userVar).trueBranch()) {
-                    trueBranch.returnValue(trueBranch.loadNull());
+                    ResultHandle exceptionInstance = trueBranch
+                            .newInstance(MethodDescriptor.ofConstructor(AuthenticationFailedException.class));
+                    trueBranch.throwException(exceptionInstance);
                 }
 
                 // :pass = user.pass | user.getPass()

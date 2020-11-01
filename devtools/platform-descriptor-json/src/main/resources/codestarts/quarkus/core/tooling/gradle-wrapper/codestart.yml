@@ -1,0 +1,10 @@
+name: gradle-wrapper
+type: tooling
+language:
+  base:
+    data:
+      gradle:
+        version: 6.5.1
+    shared-data:
+      buildtool:
+        cli: ./gradlew

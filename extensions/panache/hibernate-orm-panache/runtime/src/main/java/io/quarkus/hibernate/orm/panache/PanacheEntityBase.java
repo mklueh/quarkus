@@ -6,6 +6,7 @@ import java.util.Optional;
 import java.util.stream.Stream;
 
 import javax.json.bind.annotation.JsonbTransient;
+import javax.persistence.EntityManager;
 import javax.persistence.LockModeType;
 import javax.persistence.Transient;
 
@@ -32,6 +33,18 @@ public abstract class PanacheEntityBase {
     // Operations
 
     /**
+     * Returns the default {@link EntityManager} for extra operations (eg. CriteriaQueries)
+     *
+     * @return the default {@link EntityManager}
+     */
+    @JsonbTransient
+    // @JsonIgnore is here to avoid serialization of this property with jackson
+    @JsonIgnore
+    public EntityManager getEntityManager() {
+        return JpaOperations.getEntityManager(this.getClass());
+    }
+
+    /**
      * Persist this entity in the database, if not already persisted. This will set your ID field if it is not already set.
      *
      * @see #isPersistent()
@@ -54,7 +67,7 @@ public abstract class PanacheEntityBase {
      */
     public void persistAndFlush() {
         JpaOperations.persist(this);
-        JpaOperations.flush();
+        JpaOperations.flush(this);
     }
 
     /**
@@ -88,7 +101,7 @@ public abstract class PanacheEntityBase {
      * Flushes all pending changes to the database.
      */
     public void flush() {
-        JpaOperations.flush();
+        JpaOperations.flush(this);
     }
 
     // Queries

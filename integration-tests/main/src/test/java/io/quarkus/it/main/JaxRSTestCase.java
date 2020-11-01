@@ -15,6 +15,7 @@ import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.Test;
 
 import io.quarkus.it.rest.TestResource;
+import io.quarkus.test.common.http.TestHTTPEndpoint;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.RestAssured;
 import io.restassured.parsing.Parser;
@@ -28,8 +29,9 @@ public class JaxRSTestCase {
     }
 
     @Test
+    @TestHTTPEndpoint(TestResource.class)
     public void testInteger() {
-        RestAssured.when().get("/test/int/10").then().body(is("11"));
+        RestAssured.when().get("/int/10").then().body(is("11"));
     }
 
     @Test
@@ -233,10 +235,16 @@ public class JaxRSTestCase {
             sb.append("q");
         }
 
-        RestAssured.given()
-                .body(sb.toString())
-                .post("/test/max-body-size")
-                .then().statusCode(413);
+        try {
+            RestAssured.given()
+                    .body(sb.toString())
+                    .post("/test/max-body-size")
+                    .then().statusCode(413);
+        } catch (Exception ignore) {
+            //because the connection is force closed after sending the 413
+            //sometimes the client can return an IOException if it is still
+            //trying to send the body
+        }
 
         // while sending a payload within the limit should return 200
         RestAssured.given()

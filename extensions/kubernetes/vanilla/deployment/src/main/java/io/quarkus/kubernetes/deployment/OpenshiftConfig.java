@@ -4,6 +4,7 @@ package io.quarkus.kubernetes.deployment;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 
 import io.dekorate.kubernetes.annotation.ImagePullPolicy;
 import io.dekorate.kubernetes.annotation.ServiceType;
@@ -12,6 +13,19 @@ import io.quarkus.runtime.annotations.ConfigRoot;
 
 @ConfigRoot
 public class OpenshiftConfig implements PlatformConfiguration {
+
+    public static enum OpenshiftFlavor {
+        v3,
+        v4;
+    }
+
+    /**
+     * The OpenShift flavor / version to use.
+     * Older versions of OpenShift have minor differrences in the labels and fields they support.
+     * This option allows users to have their manifests automatically aligned to the OpenShift 'flavor' they use.
+     */
+    @ConfigItem(defaultValue = "v4")
+    OpenshiftFlavor flavor;
 
     /**
      * The name of the group this component belongs too
@@ -33,6 +47,18 @@ public class OpenshiftConfig implements PlatformConfiguration {
     Optional<String> version;
 
     /**
+     * The namespace the generated resources should belong to.
+     * If not value is set, then the 'namespace' field will not be
+     * added to the 'metadata' section of the generated manifests.
+     * This in turn means that when the manifests are applied to a cluster,
+     * the namespace will be resolved from the current Kubernetes context
+     * (see https://kubernetes.io/docs/concepts/configuration/organize-cluster-access-kubeconfig/#context
+     * for more details).
+     */
+    @ConfigItem
+    Optional<String> namespace;
+
+    /**
      * Custom labels to add to all resources
      */
     @ConfigItem
@@ -51,12 +77,6 @@ public class OpenshiftConfig implements PlatformConfiguration {
      */
     @ConfigItem(defaultValue = "true")
     boolean addBuildTimestamp;
-
-    /**
-     * Environment variables to add to all containers
-     */
-    @ConfigItem
-    Map<String, EnvConfig> envVars;
 
     /**
      * Working directory
@@ -107,6 +127,12 @@ public class OpenshiftConfig implements PlatformConfiguration {
      */
     @ConfigItem(defaultValue = "ClusterIP")
     ServiceType serviceType;
+
+    /**
+     * The nodePort to set when serviceType is set to nodePort
+     */
+    @ConfigItem
+    OptionalInt nodePort;
 
     /**
      * Image pull policy
@@ -188,15 +214,42 @@ public class OpenshiftConfig implements PlatformConfiguration {
 
     /**
      * Sidecar containers
+     *
+     * @deprecated Use the {@code sidecars} property instead
      */
     @ConfigItem
+    @Deprecated
     Map<String, ContainerConfig> containers;
+
+    /**
+     * Sidecar containers
+     */
+    @ConfigItem
+    Map<String, ContainerConfig> sidecars;
+
+    /**
+     * The host aliases
+     */
+    @ConfigItem
+    Map<String, HostAliasConfig> hostAliases;
+
+    /**
+     * Resources requirements
+     */
+    @ConfigItem
+    ResourcesConfig resources;
 
     /**
      * If true, an Openshift Route will be created
      */
     @ConfigItem
     boolean expose;
+
+    /**
+     * If true, the 'app.kubernetes.io/version' label will be part of the selectors of Service and DeploymentConfig
+     */
+    @ConfigItem(defaultValue = "true")
+    boolean addVersionToLabelSelectors;
 
     public Optional<String> getPartOf() {
         return partOf;
@@ -210,6 +263,10 @@ public class OpenshiftConfig implements PlatformConfiguration {
         return version;
     }
 
+    public Optional<String> getNamespace() {
+        return namespace;
+    }
+
     public Map<String, String> getLabels() {
         return labels;
     }
@@ -221,10 +278,6 @@ public class OpenshiftConfig implements PlatformConfiguration {
     @Override
     public boolean isAddBuildTimestamp() {
         return addBuildTimestamp;
-    }
-
-    public Map<String, EnvConfig> getEnvVars() {
-        return envVars;
     }
 
     public Optional<String> getWorkingDir() {
@@ -307,16 +360,72 @@ public class OpenshiftConfig implements PlatformConfiguration {
         return azureDiskVolumes;
     }
 
+    public Map<String, HostAliasConfig> getHostAliases() {
+        return hostAliases;
+    }
+
+    public ResourcesConfig getResources() {
+        return resources;
+    }
+
     public Map<String, ContainerConfig> getInitContainers() {
         return initContainers;
     }
 
-    public Map<String, ContainerConfig> getContainers() {
-        return containers;
+    public Map<String, ContainerConfig> getSidecars() {
+        if (!containers.isEmpty() && !sidecars.isEmpty()) {
+            // done in order to make migration to the new property straight-forward
+            throw new IllegalStateException(
+                    "'quarkus.openshift.sidecars' and 'quarkus.openshift.containers' cannot be used together. Please use the former as the latter has been deprecated");
+        }
+        if (!containers.isEmpty()) {
+            return containers;
+        }
+
+        return sidecars;
     }
 
     @Override
     public boolean isExpose() {
         return false;
+    }
+
+    @Override
+    public String getTargetPlatformName() {
+        return Constants.OPENSHIFT;
+    }
+
+    /**
+     * Environment variables to add to all containers using the old syntax.
+     *
+     * @deprecated Use {@link #env} instead using the new syntax as follows:
+     *             <ul>
+     *             <li>{@code quarkus.kubernetes.env-vars.foo.field=fieldName} becomes
+     *             {@code quarkus.kubernetes.env.fields.foo=fieldName}</li>
+     *             <li>{@code quarkus.kubernetes.env-vars.envvar.value=value} becomes
+     *             {@code quarkus.kubernetes.env.vars.envvar=value}</li>
+     *             <li>{@code quarkus.kubernetes.env-vars.bar.configmap=configName} becomes
+     *             {@code quarkus.kubernetes.env.configmaps=configName}</li>
+     *             <li>{@code quarkus.kubernetes.env-vars.baz.secret=secretName} becomes
+     *             {@code quarkus.kubernetes.env.secrets=secretName}</li>
+     *             </ul>
+     */
+    @ConfigItem
+    @Deprecated
+    Map<String, EnvConfig> envVars;
+
+    /**
+     * Environment variables to add to all containers.
+     */
+    @ConfigItem
+    EnvVarsConfig env;
+
+    @Deprecated
+    public Map<String, EnvConfig> getEnvVars() {
+        return envVars;
+    }
+
+    public EnvVarsConfig getEnv() {
+        return env;
     }
 }

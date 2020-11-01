@@ -20,7 +20,7 @@
         </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-development-mode-spi</artifactId>
+            <artifactId>quarkus-security-runtime-spi</artifactId>
         </dependency>
         <dependency>
             <groupId>io.quarkus.security</groupId>
@@ -31,10 +31,6 @@
                     <artifactId>cdi-api</artifactId>
                 </exclusion>
             </exclusions>
-        </dependency>
-        <dependency>
-            <groupId>jakarta.enterprise</groupId>
-            <artifactId>jakarta.enterprise.cdi-api</artifactId>
         </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>

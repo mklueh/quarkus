@@ -7,7 +7,9 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
+import org.apache.commons.lang3.StringUtils;
 import org.jboss.jandex.ClassInfo;
 import org.jboss.jandex.ClassType;
 import org.jboss.jandex.DotName;
@@ -125,7 +127,7 @@ public class MethodNameParser {
 
         // handle the 'OrderBy' clause which is assumed to be at the end of the query
         Sort sort = null;
-        if (afterByPart.contains(ORDER_BY)) {
+        if (containsLogicOperator(afterByPart, ORDER_BY)) {
             int orderByIndex = afterByPart.indexOf(ORDER_BY);
             if (orderByIndex + ORDER_BY.length() == afterByPart.length()) {
                 throw new UnableToParseMethodException(
@@ -157,8 +159,8 @@ public class MethodNameParser {
         }
 
         List<String> parts = Collections.singletonList(afterByPart); // default when no 'And' or 'Or' exists
-        boolean containsAnd = afterByPart.contains("And");
-        boolean containsOr = afterByPart.contains("Or");
+        boolean containsAnd = containsLogicOperator(afterByPart, "And");
+        boolean containsOr = containsLogicOperator(afterByPart, "Or");
         if (containsAnd && containsOr) {
             throw new UnableToParseMethodException(
                     "'And' and 'Or' clauses cannot be mixed in a method name - Try specifying the Query with the @Query annotation. Offending method is "
@@ -192,43 +194,51 @@ public class MethodNameParser {
             }
             FieldInfo fieldInfo = getField(fieldName);
             if (fieldInfo == null) {
-                String parsingExceptionMethod = "Entity " + entityClass + " does not contain a field named: " + part + ". " +
-                        "Offending method is " + methodName;
+                ClassInfo associatedEntityClassInfo;
+                String associatedEntityFieldName;
+                String simpleFieldName;
+                String parsingExceptionMethod = "Entity " + entityClass + " does not contain a field named: " + fieldName +
+                        ". " + "Offending method is " + methodName;
 
                 // determine if we are trying to use a field of one of the associated entities
+                int nextStartingIndex = 1;
+                while (true) {
+                    int fieldEndIndex = -1;
+                    for (int i = nextStartingIndex; i < fieldName.length() - 1; i++) {
+                        char c = fieldName.charAt(i);
+                        if ((c >= 'A' && c <= 'Z') || c == '_') {
+                            fieldEndIndex = i;
+                            break;
+                        }
+                    }
 
-                int fieldEndIndex = -1;
-                for (int i = 1; i < fieldName.length() - 1; i++) {
-                    char c = fieldName.charAt(i);
-                    if ((c >= 'A' && c <= 'Z') || c == '_') {
-                        fieldEndIndex = i;
+                    if (fieldEndIndex == -1) {
+                        throw new UnableToParseMethodException(parsingExceptionMethod);
+                    }
+
+                    int associatedEntityFieldStartIndex = fieldName.charAt(fieldEndIndex) == '_' ? fieldEndIndex + 1
+                            : fieldEndIndex;
+                    if (associatedEntityFieldStartIndex >= fieldName.length() - 1) {
+                        throw new UnableToParseMethodException(parsingExceptionMethod);
+                    }
+
+                    simpleFieldName = fieldName.substring(0, fieldEndIndex);
+                    associatedEntityFieldName = lowerFirstLetter(fieldName.substring(associatedEntityFieldStartIndex));
+                    fieldInfo = getField(simpleFieldName);
+                    if ((fieldInfo == null) || !(fieldInfo.type() instanceof ClassType)) {
+                        nextStartingIndex = fieldEndIndex + 1;
+                    } else {
                         break;
                     }
                 }
 
-                if (fieldEndIndex == -1) {
-                    throw new UnableToParseMethodException(parsingExceptionMethod);
-                }
-
-                int associatedEntityFieldStartIndex = fieldName.charAt(fieldEndIndex) == '_' ? fieldEndIndex + 1
-                        : fieldEndIndex;
-                if (associatedEntityFieldStartIndex >= fieldName.length() - 1) {
-                    throw new UnableToParseMethodException(parsingExceptionMethod);
-                }
-
-                String simpleFieldName = fieldName.substring(0, fieldEndIndex);
-                String associatedEntityFieldName = lowerFirstLetter(fieldName.substring(associatedEntityFieldStartIndex));
-                fieldInfo = getField(simpleFieldName);
-                if ((fieldInfo == null) || !(fieldInfo.type() instanceof ClassType)) {
-                    throw new UnableToParseMethodException(parsingExceptionMethod);
-                }
-
-                ClassInfo associatedEntityClassInfo = indexView.getClassByName(fieldInfo.type().name());
+                associatedEntityClassInfo = indexView.getClassByName(fieldInfo.type().name());
                 if (associatedEntityClassInfo == null) {
                     throw new IllegalStateException(
                             "Entity class " + fieldInfo.type().name() + " was not part of the Quarkus index");
                 }
-                FieldInfo associatedEntityClassField = associatedEntityClassInfo.field(associatedEntityFieldName);
+                FieldInfo associatedEntityClassField = getAssociatedEntityClassField(associatedEntityFieldName,
+                        associatedEntityClassInfo);
                 if (associatedEntityClassField == null) {
                     throw new UnableToParseMethodException(parsingExceptionMethod);
                 }
@@ -252,6 +262,13 @@ public class MethodNameParser {
 
             String upperPrefix = (ignoreCase || allIgnoreCase) ? "UPPER(" : "";
             String upperSuffix = (ignoreCase || allIgnoreCase) ? ")" : "";
+
+            // If the fieldName is not a field in the class and in camelcase format,
+            // then split it as hierarchy of fields
+            if (entityClass.field(fieldName) == null) {
+                fieldName = handleFieldsHierarchy(fieldName, fieldInfo);
+            }
+
             where.append(upperPrefix).append(fieldName).append(upperSuffix);
             if ((operation == null) || "Equals".equals(operation) || "Is".equals(operation)) {
                 paramsCount++;
@@ -365,6 +382,113 @@ public class MethodNameParser {
                 topCount);
     }
 
+    private String handleFieldsHierarchy(String fieldName, FieldInfo currentField) {
+        StringBuilder finalName = new StringBuilder(fieldName);
+
+        Set<String> childFields = new HashSet<>();
+
+        childFields.addAll(entityClass.fields().stream()
+                .map(FieldInfo::name)
+                .collect(Collectors.toList()));
+
+        // Collecting the current class fields
+        ClassInfo currentClassInfo = indexView.getClassByName(currentField.type().name());
+
+        if (currentClassInfo != null) {
+            childFields.addAll(
+                    currentClassInfo.fields()
+                            .stream()
+                            .map(FieldInfo::name)
+                            .collect(Collectors.toList()));
+        }
+
+        // Collecting the inherited fields from the superclass of the actual class
+        DotName superClassName = entityClass.superClassType().name();
+        ClassInfo superClassInfo = indexView.getClassByName(superClassName);
+
+        ClassInfo classByName;
+
+        if (superClassName != null && superClassInfo != null && currentClassInfo != null &&
+                currentClassInfo.superClassType() != null &&
+                (classByName = indexView.getClassByName(currentClassInfo.superClassType().name())) != null) {
+
+            childFields.addAll(superClassInfo.fields()
+                    .stream()
+                    .map(FieldInfo::name).collect(Collectors.toList()));
+
+            childFields.addAll(classByName.fields()
+                    .stream()
+                    .map(FieldInfo::name).collect(Collectors.toList()));
+        }
+
+        // Collecting the inherited fields from the superclasses of the attributes
+        if (currentClassInfo != null && currentClassInfo.superClassType() != null
+                && (classByName = indexView.getClassByName(currentClassInfo.superClassType().name())) != null) {
+
+            childFields.addAll(
+                    classByName.fields()
+                            .stream()
+                            .map(FieldInfo::name).collect(Collectors.toList()));
+        }
+
+        // Building the fieldName from the members classes and their superclasses
+        for (String fieldInf : childFields) {
+            if (StringUtils.containsIgnoreCase(fieldName, fieldInf)) {
+                String newValue = finalName.toString()
+                        .replaceAll("(?i)" + fieldInf, lowerFirstLetter(fieldInf) + ".");
+                newValue = newValue.replace("..", "."); // this is just the easiest way to deal with fields of fields
+                finalName.delete(0, finalName.length());
+                finalName.append(newValue);
+            }
+        }
+
+        // In some cases, the built hierarchy is ending by a joining point. so we need to remove it
+        if (finalName.toString().charAt(finalName.length() - 1) == '.') {
+            fieldName = finalName.toString().replaceAll(".$", "");
+        } else {
+            fieldName = finalName.toString();
+        }
+        return fieldName;
+    }
+
+    /**
+     * Meant to be called with {@param operator} being {@code "And"} or {@code "Or"}
+     * and returns {@code true} if the string contains the logical operator
+     * and the next character is an uppercase character.
+     * The reasoning is that if the next character is not uppercase,
+     * then the operator string is just part of a word
+     */
+    private boolean containsLogicOperator(String str, String operatorStr) {
+        int index = str.indexOf(operatorStr);
+        if (index == -1) {
+            return false;
+        }
+        if (str.length() < index + operatorStr.length() + 1) {
+            return false;
+        }
+        return Character.isUpperCase(str.charAt(index + operatorStr.length()));
+    }
+
+    /**
+     * Looks for the field in either the class itself or in a superclass that is annotated with @MappedSuperClass
+     */
+    private FieldInfo getAssociatedEntityClassField(String associatedEntityFieldName, ClassInfo associatedEntityClassInfo) {
+        FieldInfo fieldInfo = associatedEntityClassInfo.field(associatedEntityFieldName);
+        if (fieldInfo != null) {
+            return fieldInfo;
+        }
+        if (DotNames.OBJECT.equals(associatedEntityClassInfo.superName())) {
+            return null;
+        }
+
+        ClassInfo superClassInfo = indexView.getClassByName(associatedEntityClassInfo.superName());
+        if (superClassInfo.classAnnotation(DotNames.JPA_MAPPED_SUPERCLASS) == null) {
+            return null;
+        }
+
+        return getAssociatedEntityClassField(associatedEntityFieldName, superClassInfo);
+    }
+
     private void validateFieldWithOperation(String operation, FieldInfo fieldInfo, String methodName) {
         DotName fieldTypeDotName = fieldInfo.type().name();
         if (STRING_LIKE_OPERATIONS.contains(operation) && !DotNames.STRING.equals(fieldTypeDotName)) {
@@ -449,7 +573,13 @@ public class MethodNameParser {
     }
 
     private FieldInfo getField(String fieldName) {
+        // Before validating the fieldInfo,
+        // we need to split the camelcase format and grab the first item
         FieldInfo fieldInfo = entityClass.field(fieldName);
+        if (fieldInfo == null) {
+            String[] camelCaseStrings = StringUtils.splitByCharacterTypeCamelCase(fieldName);
+            fieldInfo = entityClass.field(camelCaseStrings[0]);
+        }
         if (fieldInfo == null) {
             for (ClassInfo superClass : mappedSuperClassInfos) {
                 fieldInfo = superClass.field(fieldName);
@@ -462,25 +592,22 @@ public class MethodNameParser {
     }
 
     private List<ClassInfo> getMappedSuperClassInfos(IndexView indexView, ClassInfo entityClass) {
-        List<ClassInfo> mappedSuperClassInfos = new ArrayList<>(3);
+        List<ClassInfo> mappedSuperClassInfoElements = new ArrayList<>(3);
         Type superClassType = entityClass.superClassType();
         while (superClassType != null && !superClassType.name().equals(DotNames.OBJECT)) {
-            ClassInfo superClass = indexView.getClassByName(entityClass.superName());
+            ClassInfo superClass = indexView.getClassByName(superClassType.name());
             if (superClass.classAnnotation(DotNames.JPA_MAPPED_SUPERCLASS) != null) {
-                mappedSuperClassInfos.add(superClass);
+                mappedSuperClassInfoElements.add(superClass);
             }
 
             if (superClassType.kind() == Kind.CLASS) {
-                superClassType = indexView.getClassByName(superClassType.name()).superClassType();
+                superClassType = superClass.superClassType();
             } else if (superClassType.kind() == Kind.PARAMETERIZED_TYPE) {
                 ParameterizedType parameterizedType = superClassType.asParameterizedType();
                 superClassType = parameterizedType.owner();
             }
         }
-        if (mappedSuperClassInfos.size() > 0) {
-            return mappedSuperClassInfos;
-        }
-        return Collections.emptyList();
+        return mappedSuperClassInfoElements;
     }
 
     public static class Result {

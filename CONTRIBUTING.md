@@ -22,13 +22,70 @@ This project uses GitHub issues to manage the issues. Open an issue directly in 
 If you believe you found a bug, and it's likely possible, please indicate a way to reproduce it, what you are seeing and what you would expect to see.
 Don't forget to indicate your Quarkus, Java, Maven/Gradle and GraalVM version. 
 
+## Checking an issue is fixed in master
+
+Sometimes a bug has been fixed in the `master` branch of Quarkus and you want to confirm it is fixed for your own application.
+Testing the `master` branch is easy and you have two options:
+
+* either use the snapshots we publish daily on https://oss.sonatype.org/content/repositories/snapshots/
+* or build Quarkus all by yourself
+
+This is a quick summary to get you to quickly test master.
+If you are interested in having more details, refer to the [Build section](#build) and the [Usage section](#usage).
+
+### Using snapshots
+
+Snapshots are published daily so you will have to wait for a snapshot containing the commits you are interested in.
+
+Then just add https://oss.sonatype.org/content/repositories/snapshots/ as a Maven repository **and** a plugin repository.
+
+You can check the last publication date here: https://oss.sonatype.org/content/repositories/snapshots/io/quarkus/ .
+
+### Building master
+
+Just do the following:
+
+```
+git clone git@github.com:quarkusio/quarkus.git
+cd quarkus
+export MAVEN_OPTS="-Xmx1563m"
+./mvnw -Dquickly
+```
+
+Wait for a bit and you're done.
+
+### Updating the version
+
+Be careful, when using the `master` branch, you need to use the `quarkus-bom` instead of the `quarkus-universe-bom`.
+
+Update both the versions of the `quarkus-bom` and the Quarkus Maven plugin to `999-SNAPSHOT`.
+
+You can now test your application.
+
 ## Before you contribute
 
 To contribute, use GitHub Pull Requests, from your **own** fork.
 
+Also, make sure you have set up your Git authorship correctly:
+
+```
+git config --global user.name "Your Full Name"
+git config --global user.email your.email@example.com
+```
+
+If you use different computers to contribute, please make sure the name is the same on all your computers.
+
+We use this information to acknowledge your contributions in release announcements.
+
 ### Code reviews
 
 All submissions, including submissions by project members, need to be reviewed before being merged.
+
+### Coding Guidelines
+
+ * We decided to disallow `@author` tags in the Javadoc: they are hard to maintain, especially in a very active project, and we use the Git history to track authorship. GitHub also has [this nice page with your contributions](https://github.com/quarkusio/quarkus/graphs/contributors). For each major Quarkus release, we also publish the list of contributors in the announcement post.
+ * Commits should be atomic and semantic. Please properly squash your pull requests before submitting them. Fixup commits can be used temporarily during the review process but things should be squashed at the end to have meaningful commits.
+ We use merge commits so the GitHub Merge button cannot do that for us. If you don't know how to do that, just ask in your pull request, we will be happy to help!
 
 ### Continuous Integration
 
@@ -100,20 +157,21 @@ select the `eclipse.importorder` file as the import order config file.
 * Clone the repository: `git clone https://github.com/quarkusio/quarkus.git`
 * Navigate to the directory: `cd quarkus`
 * Set Maven heap to 1.5GB `export MAVEN_OPTS="-Xmx1563m"`
-* Invoke `./mvnw clean install -DskipTests -DskipITs -DskipDocs` from the root directory
+* Invoke `./mvnw -Dquickly` from the root directory
 
 ```bash
 git clone https://github.com/quarkusio/quarkus.git
 cd quarkus
 export MAVEN_OPTS="-Xmx1563m"
-./mvnw clean install -DskipTests -DskipITs -DskipDocs
+./mvnw -Dquickly
 # Wait... success!
 ```
 
-This build skipped all the tests, native-image builds and documentation generation. 
+This build skipped all the tests, native-image builds, documentation generation etc. and used the Maven goals `clean install` by default.
+For more details about `-Dquickly` have a look at the `quick-build` profile in `quarkus-parent` (root `pom.xml`).
 
-Removing the `-DskipTests -DskipITs` flags enables the tests. 
-It will take much longer to build but will give you more guarantees on your code. 
+Adding `-DskipTests=false -DskipITs=false` enables the tests.
+It will take much longer to build but will give you more guarantees on your code.
 
 You can build and test native images in the integration tests supporting it by using `./mvnw install -Dnative`.
 
@@ -121,6 +179,46 @@ By default the build will use the native image server. This speeds up the build,
 not being invalidated correctly in some cases. To run a build with a new instance of the server you can use
 `./mvnw install -Dnative-image.new-server=true`.
 
+### Workflow tips
+
+Due to Quarkus being a large repository, having to rebuild the entire project every time a change is made isn't very productive. 
+The following Maven tips can vastly speed up development when working on a specific extension.
+
+#### Building all modules of an extension
+
+Let's say you want to make changes to the `Jackson` extension. This extension contains the `deployment`, `runtime` and `spi` modules
+which can all be built by executing following command:
+
+```
+./mvnw install -f extensions/jackson/
+```
+
+This command uses the path of the extension on the filesystem to identify it. Moreover, Maven will automatically build all modules in that path recursively.
+
+#### Building a single module of an extension
+
+Let's say you want to make changes to the `deployment` module of the Jackson extension. There are two ways to accomplish this task as shown by the following commands:
+
+```
+./mvnw install -f extensions/jackson/deployment
+```
+
+or 
+
+```
+./mvnw install --projects 'io.quarkus:quarkus-jackson-deployment'
+```
+
+In this command we use the groupId and artifactId of the module to identify it.
+
+#### Running a single test
+
+Often you need to run a single test from some Maven module. Say for example you want to run the `GreetingResourceTest` of the `resteasy-jackson` Quarkus integration test (which can be found [here](https://github.com/quarkusio/quarkus/blob/master/integration-tests/resteasy-jackson)).
+One way to accomplish this is by executing the following command:
+
+```
+./mvnw test -f integration-tests/resteasy-jackson/ -Dtest=GreetingResourceTest
+```
 
 ## Usage
 
@@ -128,8 +226,23 @@ After the build was successful, the artifacts are available in your local Maven 
 
 To include them into your project a few things have to be changed.
 
-#### With Gradle
+#### With Maven
 
+*pom.xml*
+
+```
+<properties>
+    <quarkus-plugin.version>999-SNAPSHOT</quarkus-plugin.version>
+    <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
+    <quarkus.platform.group-id>io.quarkus</quarkus.platform.group-id>
+    <quarkus.platform.version>999-SNAPSHOT</quarkus.platform.version>
+    .
+    .
+    .
+</properties>
+```
+
+#### With Gradle
 
 *gradle.properties*
 
@@ -164,22 +277,6 @@ repositories {
     jcenter()
     mavenCentral()
 }
-```
-
-#### With Maven
-
-*pom.xml*
-
-```
-<properties>
-    <quarkus-plugin.version>999-SNAPSHOT</quarkus-plugin.version>
-    <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
-    <quarkus.platform.group-id>io.quarkus</quarkus.platform.group-id>
-    <quarkus.platform.version>999-SNAPSHOT</quarkus.platform.version>
-    .
-    .
-    .
-</properties>
 ```
 
 ### MicroProfile TCK's
@@ -263,5 +360,9 @@ DevMojoIT require a few minutes to run but anything more than that is not expect
 
 * The native integration test for my extension didn't run in the CI
 
-In the interest of speeding up CI, the native build stage `run_native_tests_stage` have been split into multiple steps. 
-This means that each new extension needs to be configured explicitly in `azure-pipelines.yml` to have it's integration tests run in native mode
+In the interest of speeding up CI, the native build job `native-tests` have been split into multiple categories which are run in parallel. 
+This means that each new extension needs to be added explicitly under the appropriate profile/group (e.g. IT-Misc1) in the [integration tests `pom.xml`](integration-tests/pom.xml) to have its integration tests run in native mode.
+Adjustments to [`ci-actions.yml`](.github/workflows/ci-actions.yml) will also be required in any of the following cases:
+1. The profile/group where the new extension was added to times out, so increasing the corresponding `timeout` in `ci-actions.yml` is required.
+2. A new profile/group was added to pom.xml, as a result it needs to be added to `ci-actions.yml` matrix as a new `Category`.
+3. The new integration test depends on some service that the CI needs to explicitly manage (e.g., start/stop a container image).

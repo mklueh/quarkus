@@ -6,10 +6,12 @@ import io.quarkus.arc.Components;
 import io.quarkus.arc.ComponentsProvider;
 import io.quarkus.arc.InjectableBean;
 import io.quarkus.arc.InjectableContext;
+import io.quarkus.arc.InjectableInstance;
 import io.quarkus.arc.InjectableInterceptor;
 import io.quarkus.arc.InjectableObserverMethod;
 import io.quarkus.arc.InstanceHandle;
 import io.quarkus.arc.ManagedContext;
+import io.quarkus.arc.RemovedBean;
 import io.quarkus.arc.ResourceReferenceProvider;
 import io.quarkus.arc.impl.ArcCDIProvider.ArcCDI;
 import java.lang.annotation.Annotation;
@@ -21,6 +23,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -70,6 +73,7 @@ public class ArcContainerImpl implements ArcContainer {
     private final AtomicBoolean running;
 
     private final List<InjectableBean<?>> beans;
+    private final List<RemovedBean> removedBeans;
     private final List<InjectableInterceptor<?>> interceptors;
     private final List<InjectableObserverMethod<?>> observers;
     private final Map<Class<? extends Annotation>, Set<Annotation>> transitiveInterceptorBindings;
@@ -86,12 +90,15 @@ public class ArcContainerImpl implements ArcContainer {
 
     private final List<ResourceReferenceProvider> resourceProviders;
 
+    final InstanceImpl<Object> instance;
+
     private volatile ExecutorService executorService;
 
     public ArcContainerImpl() {
         id = "" + ID_GENERATOR.incrementAndGet();
         running = new AtomicBoolean(true);
         beans = new ArrayList<>();
+        removedBeans = new ArrayList<>();
         interceptors = new ArrayList<>();
         observers = new ArrayList<>();
         transitiveInterceptorBindings = new HashMap<>();
@@ -111,6 +118,7 @@ public class ArcContainerImpl implements ArcContainer {
                     beans.add(bean);
                 }
             }
+            removedBeans.addAll(components.getRemovedBeans());
             observers.addAll(components.getObservers());
             // Add custom contexts
             for (InjectableContext context : components.getContexts()) {
@@ -141,6 +149,8 @@ public class ArcContainerImpl implements ArcContainer {
         for (ResourceReferenceProvider resourceProvider : ServiceLoader.load(ResourceReferenceProvider.class)) {
             resourceProviders.add(resourceProvider);
         }
+
+        instance = InstanceImpl.of(Object.class, Collections.emptySet());
     }
 
     private void addBuiltInBeans() {
@@ -254,6 +264,16 @@ public class ArcContainerImpl implements ArcContainer {
     }
 
     @Override
+    public <T> InjectableInstance<T> select(Class<T> type, Annotation... qualifiers) {
+        return instance.select(type, qualifiers);
+    }
+
+    @Override
+    public <T> InjectableInstance<T> select(TypeLiteral<T> type, Annotation... qualifiers) {
+        return instance.select(type, qualifiers);
+    }
+
+    @Override
     public boolean isRunning() {
         return running.get();
     }
@@ -341,12 +361,30 @@ public class ArcContainerImpl implements ArcContainer {
             Reflections.clearCaches();
             contexts.clear();
             beans.clear();
+            removedBeans.clear();
             resolved.clear();
             observers.clear();
             running.set(false);
+            InterceptedStaticMethods.clear();
 
             LOGGER.debugf("ArC DI container shut down");
         }
+    }
+
+    public List<InjectableBean<?>> getBeans() {
+        return new ArrayList<>(beans);
+    }
+
+    public List<RemovedBean> getRemovedBeans() {
+        return Collections.unmodifiableList(removedBeans);
+    }
+
+    public List<InjectableInterceptor<?>> getInterceptors() {
+        return new ArrayList<>(interceptors);
+    }
+
+    public List<InjectableObserverMethod<?>> getObservers() {
+        return new ArrayList<>(observers);
     }
 
     InstanceHandle<Object> getResource(Type type, Set<Annotation> annotations) {
@@ -455,6 +493,11 @@ public class ArcContainerImpl implements ArcContainer {
                 return bean;
             }
         }
+        for (InjectableInterceptor<?> interceptorBean : interceptors) {
+            if (interceptorBean.getIdentifier().equals(identifier)) {
+                return interceptorBean;
+            }
+        }
         return null;
     }
 
@@ -547,10 +590,37 @@ public class ArcContainerImpl implements ArcContainer {
     }
 
     List<InjectableBean<?>> getMatchingBeans(Resolvable resolvable) {
-        List<InjectableBean<?>> matching = new ArrayList<>();
+        List<InjectableBean<?>> matching = new LinkedList<>();
         for (InjectableBean<?> bean : beans) {
             if (matches(bean, resolvable.requiredType, resolvable.qualifiers)) {
                 matching.add(bean);
+            }
+        }
+        if (matching.isEmpty() && !removedBeans.isEmpty()) {
+            List<RemovedBean> removedMatching = new LinkedList<>();
+            for (RemovedBean removedBean : removedBeans) {
+                if (matches(removedBean.getTypes(), removedBean.getQualifiers(), resolvable.requiredType,
+                        resolvable.qualifiers)) {
+                    removedMatching.add(removedBean);
+                }
+            }
+            if (!removedMatching.isEmpty()) {
+                String separator = "====================";
+                String msg = "\n%1$s%1$s%1$s%1$s\n"
+                        + "CDI: programmatic lookup problem detected\n"
+                        + "-----------------------------------------\n"
+                        + "At least one bean matched the required type and qualifiers but was marked as unused and removed during build\n"
+                        + "Removed beans:\n\t- %2$s\n"
+                        + "Required type: %3$s\n"
+                        + "Required qualifiers: %4$s\n"
+                        + "Solutions:\n"
+                        + "\t- Application developers can eliminate false positives via the @Unremovable annotation\n"
+                        + "\t- Extensions can eliminate false positives via build items, e.g. using the UnremovableBeanBuildItem\n"
+                        + "\t- See also https://quarkus.io/guides/cdi-reference#remove_unused_beans\n"
+                        + "%1$s%1$s%1$s%1$s\n";
+                LOGGER.warnf(msg, separator,
+                        removedMatching.stream().map(Object::toString).collect(Collectors.joining("\n\t- ")),
+                        resolvable.requiredType, Arrays.toString(resolvable.qualifiers));
             }
         }
         return matching;
@@ -650,10 +720,14 @@ public class ArcContainerImpl implements ArcContainer {
     }
 
     private boolean matches(InjectableBean<?> bean, Type requiredType, Annotation... qualifiers) {
-        if (!BeanTypeAssignabilityRules.matches(requiredType, bean.getTypes())) {
+        return matches(bean.getTypes(), bean.getQualifiers(), requiredType, qualifiers);
+    }
+
+    private boolean matches(Set<Type> beanTypes, Set<Annotation> beanQualifiers, Type requiredType, Annotation... qualifiers) {
+        if (!BeanTypeAssignabilityRules.matches(requiredType, beanTypes)) {
             return false;
         }
-        return Qualifiers.hasQualifiers(bean, qualifiers);
+        return Qualifiers.hasQualifiers(beanQualifiers, qualifiers);
     }
 
     static ArcContainerImpl unwrap(ArcContainer container) {
@@ -664,7 +738,24 @@ public class ArcContainerImpl implements ArcContainer {
         }
     }
 
-    static ArcContainerImpl instance() {
+    public static void mockObservers(String beanIdentifier, boolean mock) {
+        instance().mockObserversFor(beanIdentifier, mock);
+    }
+
+    private void mockObserversFor(String beanIdentifier, boolean mock) {
+        for (InjectableObserverMethod<?> observer : observers) {
+            if (observer instanceof Mockable && beanIdentifier.equals(observer.getDeclaringBeanIdentifier())) {
+                Mockable mockable = (Mockable) observer;
+                if (mock) {
+                    mockable.arc$setMock(null);
+                } else {
+                    mockable.arc$clearMock();
+                }
+            }
+        }
+    }
+
+    public static ArcContainerImpl instance() {
         return unwrap(Arc.container());
     }
 

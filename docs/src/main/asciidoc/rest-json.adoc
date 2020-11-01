@@ -41,7 +41,7 @@ The solution is located in the `rest-json-quickstart` {quickstarts-tree-url}/res
 
 First, we need a new project. Create a new project with the following command:
 
-[source,shell,subs=attributes+]
+[source,bash,subs=attributes+]
 ----
 mvn io.quarkus:quarkus-maven-plugin:{quarkus-version}:create \
     -DprojectGroupId=org.acme \
@@ -52,11 +52,20 @@ mvn io.quarkus:quarkus-maven-plugin:{quarkus-version}:create \
 cd rest-json-quickstart
 ----
 
-This command generates a Maven structure importing the RESTEasy/JAX-RS and http://json-b.net/[JSON-B] extensions.
+This command generates a Maven structure importing the RESTEasy/JAX-RS and http://json-b.net/[JSON-B] extensions,
+and in particular adds the following dependency:
+
+[source,xml]
+----
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-resteasy-jsonb</artifactId>
+</dependency>
+----
 
 Quarkus also supports https://github.com/FasterXML/jackson[Jackson] so, if you prefer Jackson over JSON-B, you can create a project relying on the RESTEasy Jackson extension instead:
 
-[source,shell,subs=attributes+]
+[source,bash,subs=attributes+]
 ----
 mvn io.quarkus:quarkus-maven-plugin:{quarkus-version}:create \
     -DprojectGroupId=org.acme \
@@ -65,6 +74,17 @@ mvn io.quarkus:quarkus-maven-plugin:{quarkus-version}:create \
     -Dpath="/fruits" \
     -Dextensions="resteasy-jackson"
 cd rest-json-quickstart
+----
+
+This command generates a Maven structure importing the RESTEasy/JAX-RS and https://github.com/FasterXML/jackson[Jackson] extensions,
+and in particular adds the following dependency:
+
+[source,xml]
+----
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-resteasy-jackson</artifactId>
+</dependency>
 ----
 
 To improve user experience, Quarkus registers the three Jackson https://github.com/FasterXML/jackson-modules-java8[Java 8 modules] so you don't need to do it manually.
@@ -106,17 +126,12 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Set;
 
-import javax.ws.rs.Consumes;
 import javax.ws.rs.DELETE;
 import javax.ws.rs.GET;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
-import javax.ws.rs.Produces;
-import javax.ws.rs.core.MediaType;
 
 @Path("/fruits")
-@Produces(MediaType.APPLICATION_JSON)
-@Consumes(MediaType.APPLICATION_JSON)
 public class FruitResource {
 
     private Set<Fruit> fruits = Collections.newSetFromMap(Collections.synchronizedMap(new LinkedHashMap<>()));
@@ -152,9 +167,16 @@ depending on the extension you chose when initializing the project.
 
 [NOTE]
 ====
-While RESTEasy supports auto-negotiation, when using Quarkus, it is very important to define the `@Produces` and `@Consumes` annotations.
-They are analyzed at build time and Quarkus restricts the number of JAX-RS providers included in the native executable to the minimum required by the application.
-It allows to reduce the size of the native executable.
+When a JSON extension is installed such as `quarkus-resteasy-jsonb` or `quarkus-resteasy-jackson`, Quarkus will use the `application/json` media type
+by default for most return values, unless the media type is explicitly set via
+`@Produces` or `@Consumes` annotations (there are some exceptions for well known types, such as `String` and `File`, which default to `text/plain` and `application/octet-stream`
+respectively).
+
+If you don't want JSON by default you can set `quarkus.resteasy-json.default-json=false` and the default will change back to being auto-negotiated. If you set this
+you will need to add `@Produces(MediaType.APPLICATION_JSON)` and `@Consumes(MediaType.APPLICATION_JSON)` to your endpoints in order to use JSON.
+
+If you don't rely on the JSON default, it is heavily recommended to annotate your endpoints with the `@Produces` and `@Consumes` annotations to define precisely the expected content-types.
+It will allow to narrow down the number of JAX-RS providers (which can be seen as converters) included in the native executable.
 ====
 
 === Configuring JSON support
@@ -246,7 +268,6 @@ When you have the following REST method, Quarkus determines that `Fruit` will be
 [source,JAVA]
 ----
 @GET
-@Produces("application/json")
 public List<Fruit> list() {
     // ...
 }
@@ -266,7 +287,6 @@ Your REST method then looks like this:
 [source,JAVA]
 ----
 @GET
-@Produces("application/json")
 public Response list() {
     // ...
 }
@@ -472,7 +492,7 @@ public class LoggingFilter implements ContainerRequestFilter {
 
 Now, whenever a REST method is invoked, the request will be logged into the console:
 
-[source,shell]
+[source,text]
 ----
 2019-06-05 12:44:26,526 INFO  [org.acm.res.jso.LoggingFilter] (executor-thread-1) Request GET /legumes from IP 127.0.0.1
 2019-06-05 12:49:19,623 INFO  [org.acm.res.jso.LoggingFilter] (executor-thread-1) Request GET /fruits from IP 0:0:0:0:0:0:0:1
@@ -503,15 +523,27 @@ quarkus.resteasy.gzip.max-input=10M // <2>
 <2> Configure the upper limit on deflated request body. This is useful to mitigate potential attacks by limiting their reach. The default value is `10M`.
 This configuration option would recognize strings in this format (shown as a regular expression): `[0-9]+[KkMmGgTtPpEeZzYy]?`. If no suffix is given, assume bytes.
 
+== Multipart Support
+
+RESTEasy supports multipart via the https://docs.jboss.org/resteasy/docs/4.5.6.Final/userguide/html/Multipart.html[RESTEasy Multipart Provider].
+
+Quarkus provides an extension called `quarkus-resteasy-multipart` to make things easier for you.
+
+This extension slightly differs from the RESTEasy default behavior as the default charset (if none is specified in your request) is UTF-8 rather than US-ASCII.
+
+You can configure this behavior with the following configuration properties:
+
+include::{generated-dir}/config/quarkus-resteasy-multipart.adoc[leveloffset=+1, opts=optional]
+
 == Servlet compatibility
 
 In Quarkus, RESTEasy can either run directly on top of the Vert.x HTTP server, or on top of Undertow if you have any servlet dependency.
 
 As a result, certain classes, such as `HttpServletRequest` are not always available for injection. Most use-cases for this particular
 class are covered by JAX-RS equivalents, except for getting the remote client's IP. RESTEasy comes with a replacement API which you can inject:
-https://docs.jboss.org/resteasy/docs/4.4.2.Final/javadocs/org/jboss/resteasy/spi/HttpRequest.html[`HttpRequest`], which has the methods
-https://docs.jboss.org/resteasy/docs/4.4.2.Final/javadocs/org/jboss/resteasy/spi/HttpRequest.html#getRemoteAddress--[`getRemoteAddress()`]
-and https://docs.jboss.org/resteasy/docs/4.4.2.Final/javadocs/org/jboss/resteasy/spi/HttpRequest.html#getRemoteHost--[`getRemoteHost()`]
+https://docs.jboss.org/resteasy/docs/4.5.6.Final/javadocs/org/jboss/resteasy/spi/HttpRequest.html[`HttpRequest`], which has the methods
+https://docs.jboss.org/resteasy/docs/4.5.6.Final/javadocs/org/jboss/resteasy/spi/HttpRequest.html#getRemoteAddress--[`getRemoteAddress()`]
+and https://docs.jboss.org/resteasy/docs/4.5.6.Final/javadocs/org/jboss/resteasy/spi/HttpRequest.html#getRemoteHost--[`getRemoteHost()`]
 to solve this problem.
 
 == What's Different from Jakarta EE Development
@@ -520,9 +552,16 @@ to solve this problem.
 
 Configuration via an application-supplied subclass of `Application` is supported, but not required.
 
+=== Only a single JAX-RS application
+
+In contrast to JAX-RS (and RESTeasy) running in a standard servlet-container, Quarkus only supports the deployment of a single JAX-RS application.
+If multiple JAX-RS `Application` classes are defined, the build will fail with the message `Multiple classes have been annotated with @ApplicationPath which is currently not supported`.
+
+If multiple JAX-RS applications are defined, the property `quarkus.resteasy.ignoreApplicationClasses=true` can be used to ignore all explicit `Application` classes. This makes all resource-classes available via the application-path as defined by `quarkus.resteasy.path` (default: `/`).
+
 === Lifecycle of Resources
 
-In Quarkus all JAX-RS resources are treated as CDI beans. 
+In Quarkus all JAX-RS resources are treated as CDI beans.
 It's possible to inject other beans via `@Inject`, bind interceptors using bindings such as `@Transactional`, define `@PostConstruct` callbacks, etc.
 
 If there is no scope annotation declared on the resource class then the scope is defaulted.

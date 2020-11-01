@@ -8,8 +8,9 @@ import static org.objectweb.asm.Opcodes.ACC_VOLATILE;
 import io.quarkus.arc.ClientProxy;
 import io.quarkus.arc.InjectableBean;
 import io.quarkus.arc.InjectableContext;
-import io.quarkus.arc.MockableProxy;
 import io.quarkus.arc.impl.CreationalContextImpl;
+import io.quarkus.arc.impl.Mockable;
+import io.quarkus.arc.processor.BeanGenerator.ProviderType;
 import io.quarkus.arc.processor.ResourceOutput.Resource;
 import io.quarkus.gizmo.AssignableResultHandle;
 import io.quarkus.gizmo.BytecodeCreator;
@@ -25,9 +26,11 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 import javax.enterprise.context.ContextNotActiveException;
 import javax.enterprise.context.spi.Contextual;
@@ -36,6 +39,7 @@ import org.jboss.jandex.DotName;
 import org.jboss.jandex.FieldInfo;
 import org.jboss.jandex.MethodInfo;
 import org.jboss.jandex.Type;
+import org.jboss.jandex.TypeVariable;
 
 /**
  *
@@ -46,6 +50,8 @@ public class ClientProxyGenerator extends AbstractGenerator {
     static final String CLIENT_PROXY_SUFFIX = "_ClientProxy";
 
     static final String DELEGATE_METHOD_NAME = "arc$delegate";
+    static final String SET_MOCK_METHOD_NAME = "arc$setMock";
+    static final String CLEAR_MOCK_METHOD_NAME = "arc$clearMock";
     static final String GET_CONTEXTUAL_INSTANCE_METHOD_NAME = "arc_contextualInstance";
     static final String GET_BEAN = "arc_bean";
     static final String BEAN_FIELD = "bean";
@@ -70,16 +76,18 @@ public class ClientProxyGenerator extends AbstractGenerator {
      *
      * @param bean
      * @param beanClassName Fully qualified class name
+     * @param bytecodeTransformerConsumer
+     * @param transformUnproxyableClasses whether or not unproxyable classes should be transformed
      * @return a collection of resources
      */
-    Collection<Resource> generate(BeanInfo bean, String beanClassName) {
+    Collection<Resource> generate(BeanInfo bean, String beanClassName,
+            Consumer<BytecodeTransformer> bytecodeTransformerConsumer, boolean transformUnproxyableClasses) {
 
         ResourceClassOutput classOutput = new ResourceClassOutput(applicationClassPredicate.test(bean.getBeanClass()),
                 generateSources);
 
-        Type providerType = bean.getProviderType();
-        ClassInfo providerClass = getClassByName(bean.getDeployment().getIndex(), providerType.name());
-        String providerTypeName = providerClass.name().toString();
+        ProviderType providerType = new ProviderType(bean.getProviderType());
+        ClassInfo providerClass = getClassByName(bean.getDeployment().getBeanArchiveIndex(), providerType.name());
         String baseName = getBaseName(bean, beanClassName);
         String targetPackage = getPackageName(bean);
         String generatedName = generatedNameFromTarget(targetPackage, baseName, CLIENT_PROXY_SUFFIX);
@@ -95,17 +103,22 @@ public class ClientProxyGenerator extends AbstractGenerator {
 
         if (Modifier.isInterface(providerClass.flags())) {
             isInterface = true;
-            interfaces.add(providerTypeName);
+            interfaces.add(providerType.className());
         } else {
-            superClass = providerTypeName;
+            superClass = providerType.className();
         }
         if (mockable) {
-            interfaces.add(MockableProxy.class.getName());
+            interfaces.add(Mockable.class.getName());
         }
 
         ClassCreator clientProxy = ClassCreator.builder().classOutput(classOutput).className(generatedName)
                 .superClass(superClass)
                 .interfaces(interfaces.toArray(new String[0])).build();
+        if (AsmUtilCopy.needsSignature(providerClass)) {
+            clientProxy.setSignature(AsmUtilCopy.getSignature(providerClass));
+        }
+        Map<ClassInfo, Map<TypeVariable, Type>> resolvedTypeVariables = Types.resolvedTypeVariables(providerClass,
+                bean.getDeployment());
         FieldCreator beanField = clientProxy.getFieldCreator(BEAN_FIELD, DescriptorUtils.extToInt(beanClassName))
                 .setModifiers(ACC_PRIVATE | ACC_FINAL);
         if (mockable) {
@@ -120,17 +133,30 @@ public class ClientProxyGenerator extends AbstractGenerator {
 
         createConstructor(clientProxy, beanClassName, superClass, beanField.getFieldDescriptor(),
                 contextField != null ? contextField.getFieldDescriptor() : null);
-        implementDelegate(clientProxy, providerTypeName, beanField.getFieldDescriptor(), bean);
-        implementGetContextualInstance(clientProxy, providerTypeName);
+        implementDelegate(clientProxy, providerType, beanField.getFieldDescriptor(), bean);
+        implementGetContextualInstance(clientProxy, providerType);
         implementGetBean(clientProxy, beanField.getFieldDescriptor());
         if (mockable) {
             implementMockMethods(clientProxy);
         }
 
-        for (MethodInfo method : getDelegatingMethods(bean)) {
+        for (MethodInfo method : getDelegatingMethods(bean, bytecodeTransformerConsumer, transformUnproxyableClasses)) {
 
             MethodDescriptor originalMethodDescriptor = MethodDescriptor.of(method);
             MethodCreator forward = clientProxy.getMethodCreator(originalMethodDescriptor);
+            if (AsmUtilCopy.needsSignature(method)) {
+                Map<TypeVariable, Type> methodClassVariables = resolvedTypeVariables.get(method.declaringClass());
+                String signature = AsmUtilCopy.getSignature(method, typeVariable -> {
+                    if (methodClassVariables != null) {
+                        Type ret = methodClassVariables.get(typeVariable);
+                        // let's not map a TV to itself
+                        if (ret != typeVariable)
+                            return ret;
+                    }
+                    return null;
+                });
+                forward.setSignature(signature);
+            }
 
             // Exceptions
             for (Type exception : method.exceptions()) {
@@ -162,7 +188,7 @@ public class ClientProxyGenerator extends AbstractGenerator {
             ResultHandle delegate = forward
                     .invokeVirtualMethod(
                             MethodDescriptor.ofMethod(generatedName, DELEGATE_METHOD_NAME,
-                                    DescriptorUtils.typeToString(providerType)),
+                                    providerType.descriptorName()),
                             forward.getThis());
             ResultHandle ret;
 
@@ -195,7 +221,7 @@ public class ClientProxyGenerator extends AbstractGenerator {
             } else {
                 // make sure we do not use the original method descriptor as it could point to
                 // a default interface method containing class: make sure we invoke it on the provider type.
-                MethodDescriptor virtualMethod = MethodDescriptor.ofMethod(providerTypeName,
+                MethodDescriptor virtualMethod = MethodDescriptor.ofMethod(providerType.className(),
                         originalMethodDescriptor.getName(),
                         originalMethodDescriptor.getReturnType(),
                         originalMethodDescriptor.getParameterTypes());
@@ -211,14 +237,14 @@ public class ClientProxyGenerator extends AbstractGenerator {
 
     private void implementMockMethods(ClassCreator clientProxy) {
         MethodCreator clear = clientProxy
-                .getMethodCreator(MethodDescriptor.ofMethod(clientProxy.getClassName(), "quarkus$$clearMock", void.class));
+                .getMethodCreator(MethodDescriptor.ofMethod(clientProxy.getClassName(), CLEAR_MOCK_METHOD_NAME, void.class));
         clear.writeInstanceField(FieldDescriptor.of(clientProxy.getClassName(), MOCK_FIELD, Object.class), clear.getThis(),
                 clear.loadNull());
         clear.returnValue(null);
 
         MethodCreator set = clientProxy
                 .getMethodCreator(
-                        MethodDescriptor.ofMethod(clientProxy.getClassName(), "quarkus$$setMock", void.class, Object.class));
+                        MethodDescriptor.ofMethod(clientProxy.getClassName(), SET_MOCK_METHOD_NAME, void.class, Object.class));
         set.writeInstanceField(FieldDescriptor.of(clientProxy.getClassName(), MOCK_FIELD, Object.class), set.getThis(),
                 set.getMethodParam(0));
         set.returnValue(null);
@@ -240,15 +266,15 @@ public class ClientProxyGenerator extends AbstractGenerator {
         creator.returnValue(null);
     }
 
-    void implementDelegate(ClassCreator clientProxy, String providerTypeName, FieldDescriptor beanField, BeanInfo bean) {
-        MethodCreator creator = clientProxy.getMethodCreator(DELEGATE_METHOD_NAME, providerTypeName)
+    void implementDelegate(ClassCreator clientProxy, ProviderType providerType, FieldDescriptor beanField, BeanInfo bean) {
+        MethodCreator creator = clientProxy.getMethodCreator(DELEGATE_METHOD_NAME, providerType.descriptorName())
                 .setModifiers(Modifier.PRIVATE);
         if (mockable) {
             //if mockable and mocked just return the mock
             ResultHandle mock = creator.readInstanceField(
                     FieldDescriptor.of(clientProxy.getClassName(), MOCK_FIELD, Object.class.getName()), creator.getThis());
             BytecodeCreator falseBranch = creator.ifNull(mock).falseBranch();
-            falseBranch.returnValue(falseBranch.checkCast(mock, providerTypeName));
+            falseBranch.returnValue(falseBranch.checkCast(mock, providerType.className()));
         }
 
         ResultHandle beanHandle = creator.readInstanceField(beanField, creator.getThis());
@@ -287,12 +313,13 @@ public class ClientProxyGenerator extends AbstractGenerator {
         creator.returnValue(ret);
     }
 
-    void implementGetContextualInstance(ClassCreator clientProxy, String providerTypeName) {
+    void implementGetContextualInstance(ClassCreator clientProxy, ProviderType providerType) {
         MethodCreator creator = clientProxy.getMethodCreator(GET_CONTEXTUAL_INSTANCE_METHOD_NAME, Object.class)
                 .setModifiers(Modifier.PUBLIC);
         creator.returnValue(
                 creator.invokeVirtualMethod(
-                        MethodDescriptor.ofMethod(clientProxy.getClassName(), DELEGATE_METHOD_NAME, providerTypeName),
+                        MethodDescriptor.ofMethod(clientProxy.getClassName(), DELEGATE_METHOD_NAME,
+                                providerType.descriptorName()),
                         creator.getThis()));
     }
 
@@ -302,23 +329,35 @@ public class ClientProxyGenerator extends AbstractGenerator {
         creator.returnValue(creator.readInstanceField(beanField, creator.getThis()));
     }
 
-    Collection<MethodInfo> getDelegatingMethods(BeanInfo bean) {
+    Collection<MethodInfo> getDelegatingMethods(BeanInfo bean, Consumer<BytecodeTransformer> bytecodeTransformerConsumer,
+            boolean transformUnproxyableClasses) {
         Map<Methods.MethodKey, MethodInfo> methods = new HashMap<>();
 
         if (bean.isClassBean()) {
-            Methods.addDelegatingMethods(bean.getDeployment().getIndex(), bean.getTarget().get().asClass(),
-                    methods);
+            Set<Methods.NameAndDescriptor> methodsFromWhichToRemoveFinal = new HashSet<>();
+            ClassInfo classInfo = bean.getTarget().get().asClass();
+            Methods.addDelegatingMethods(bean.getDeployment().getBeanArchiveIndex(), classInfo,
+                    methods, methodsFromWhichToRemoveFinal, transformUnproxyableClasses);
+            if (!methodsFromWhichToRemoveFinal.isEmpty()) {
+                String className = classInfo.name().toString();
+                bytecodeTransformerConsumer.accept(new BytecodeTransformer(className,
+                        new Methods.RemoveFinalFromMethod(className, methodsFromWhichToRemoveFinal)));
+            }
         } else if (bean.isProducerMethod()) {
             MethodInfo producerMethod = bean.getTarget().get().asMethod();
-            ClassInfo returnTypeClass = getClassByName(bean.getDeployment().getIndex(), producerMethod.returnType());
-            Methods.addDelegatingMethods(bean.getDeployment().getIndex(), returnTypeClass, methods);
+            ClassInfo returnTypeClass = getClassByName(bean.getDeployment().getBeanArchiveIndex(), producerMethod.returnType());
+            Methods.addDelegatingMethods(bean.getDeployment().getBeanArchiveIndex(), returnTypeClass, methods, null,
+                    transformUnproxyableClasses);
         } else if (bean.isProducerField()) {
             FieldInfo producerField = bean.getTarget().get().asField();
-            ClassInfo fieldClass = getClassByName(bean.getDeployment().getIndex(), producerField.type());
-            Methods.addDelegatingMethods(bean.getDeployment().getIndex(), fieldClass, methods);
+            ClassInfo fieldClass = getClassByName(bean.getDeployment().getBeanArchiveIndex(), producerField.type());
+            Methods.addDelegatingMethods(bean.getDeployment().getBeanArchiveIndex(), fieldClass, methods, null,
+                    transformUnproxyableClasses);
         } else if (bean.isSynthetic()) {
-            Methods.addDelegatingMethods(bean.getDeployment().getIndex(), bean.getImplClazz(), methods);
+            Methods.addDelegatingMethods(bean.getDeployment().getBeanArchiveIndex(), bean.getImplClazz(), methods, null,
+                    transformUnproxyableClasses);
         }
+
         return methods.values();
     }
 
